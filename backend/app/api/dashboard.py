@@ -22,11 +22,11 @@ async def get_dashboard(
     """Get dashboard overview with real metrics, AI insights, and frozen capital."""
     engine = AnalyticsEngine(db)
 
-    # 1. Compute dashboard metrics (Analytics Engine)
-    dashboard_metrics = await engine.compute_dashboard_metrics()
-
-    # 2. Compute all product metrics
+    # 1. Compute all product metrics ONCE and reuse them.
     all_metrics = await engine.compute_all_product_metrics()
+
+    # 2. Compute dashboard metrics from the already calculated metrics.
+    dashboard_metrics = await engine.compute_dashboard_metrics(all_metrics)
 
     # 3. Prioritize (Decision Engine)
     prioritized = prioritize_products(all_metrics)
@@ -47,8 +47,11 @@ async def get_dashboard(
     for item in attention:
         item["ai_available"] = is_ai_available()
 
-    # 7. Frozen capital items
-    frozen = await engine.get_frozen_capital_products(limit=10)
+    # 7. Frozen capital items ? reuse already calculated metrics.
+    frozen = await engine.get_frozen_capital_products(
+        limit=10,
+        all_metrics=all_metrics,
+    )
 
     # 8. Sales chart (30 days)
     sales_summary = await engine.get_sales_summary()

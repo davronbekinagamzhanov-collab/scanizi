@@ -169,9 +169,13 @@ class AnalyticsEngine:
                 metrics.append(m)
         return metrics
 
-    async def compute_dashboard_metrics(self) -> Dict[str, Any]:
+    async def compute_dashboard_metrics(
+        self,
+        all_metrics: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         """Compute high-level dashboard metrics."""
-        all_metrics = await self.compute_all_product_metrics()
+        if all_metrics is None:
+            all_metrics = await self.compute_all_product_metrics()
 
         if not all_metrics:
             return {
@@ -233,9 +237,14 @@ class AnalyticsEngine:
             "total_products": len(all_metrics),
         }
 
-    async def get_frozen_capital_products(self, limit: int = 50) -> List[Dict]:
+    async def get_frozen_capital_products(
+        self,
+        limit: int = 50,
+        all_metrics: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[Dict]:
         """Get products where money is frozen (slow-moving + high value)."""
-        all_metrics = await self.compute_all_product_metrics()
+        if all_metrics is None:
+            all_metrics = await self.compute_all_product_metrics()
 
         frozen = [
             m for m in all_metrics
