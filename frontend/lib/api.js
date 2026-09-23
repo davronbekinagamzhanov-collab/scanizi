@@ -23,7 +23,7 @@ function normalizeError(err) {
     return new ApiError(408, 'Превышено время ожидания. Проверьте соединение.', {});
   }
   if (err instanceof ApiError) return err;
-  if (!navigator.onLine) {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
     return new ApiError(0, 'Нет интернет-соединения.', {});
   }
   return new ApiError(0, err.message || 'Сетевая ошибка', {});
@@ -144,6 +144,17 @@ export async function getSalesSummary(store_id) {
   return request(`/sales/summary${qs}`);
 }
 
+/**
+ * Record a sale transaction (ACID: updates inventory automatically).
+ * @param {object} data - { product_id, store_id, warehouse_id, quantity, unit_price }
+ */
+export async function recordSale(data) {
+  return request('/sales', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
 // ─── Capital ────────────────────────────────────────
 export async function getCapital() {
   return request('/capital');
@@ -182,9 +193,33 @@ export async function getDataSources() {
   return request('/data/sources');
 }
 
-export async function importFile(file, warehouse_id) {
+/**
+ * Step 1: AI analyzes file structure — returns column mapping + summary.
+ * Does NOT import anything. Timeout: 20s.
+ * @param {File} file
+ */
+export async function analyzeExcelWithAI(file) {
   const formData = new FormData();
   formData.append('file', file);
+  return request('/data/ai-analyze', {
+    method: 'POST',
+    body: formData,
+  }, AI_TIMEOUT_MS);
+}
+
+/**
+ * Step 2: Import file into PostgreSQL with optional AI column mapping.
+ * Snapshot mode: quantity in Excel = actual quantity (replaces DB value).
+ * @param {File} file
+ * @param {number|null} warehouse_id
+ * @param {object|null} columnMapping - AI-suggested column mapping
+ */
+export async function importFile(file, warehouse_id = null, columnMapping = null) {
+  const formData = new FormData();
+  formData.append('file', file);
+  if (columnMapping) {
+    formData.append('column_mapping', JSON.stringify(columnMapping));
+  }
   const qs = warehouse_id ? `?warehouse_id=${warehouse_id}` : '';
   return request(`/data/import${qs}`, {
     method: 'POST',

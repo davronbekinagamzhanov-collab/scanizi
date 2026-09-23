@@ -1,6 +1,7 @@
 """Sales, Capital, Stores, Warehouses, Employees, Scanner, Data Sources, Demo, Recommendations APIs"""
 
-from fastapi import APIRouter, Depends, Query, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, Query, HTTPException, UploadFile, File, Form
+import json
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from typing import Optional
@@ -84,6 +85,90 @@ async def get_sales_summary(
     """Get sales summary with charts data."""
     engine = AnalyticsEngine(db)
     return await engine.get_sales_summary(store_id)
+
+
+@sales_router.post("")
+async def record_sale(
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_owner_or_manager),
+):
+    """
+    Record a sale transaction.
+    ACID: SELECT inventory FOR UPDATE → check stock → UPDATE inventory → INSERT Sale.
+    Rejects overselling. Full rollback on any error.
+    """
+    from sqlalchemy import text
+    product_id = data.get("product_id")
+    warehouse_id = data.get("warehouse_id")
+    store_id = data.get("store_id")
+    quantity = float(data.get("quantity", 0))
+    unit_price = float(data.get("unit_price", 0))
+
+    if not product_id or quantity <= 0:
+        raise HTTPException(status_code=400, detail="product_id и quantity обязательны")
+
+    # Validate product exists
+    prod_r = await db.execute(select(Product).where(Product.id == product_id))
+    product = prod_r.scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=404, detail="Товар не найден")
+
+    # Resolve warehouse: use provided or find first warehouse of product
+    if warehouse_id:
+        inv_r = await db.execute(
+            select(Inventory).where(
+                Inventory.product_id == product_id,
+                Inventory.warehouse_id == warehouse_id,
+            ).with_for_update()
+        )
+    else:
+        inv_r = await db.execute(
+            select(Inventory).where(
+                Inventory.product_id == product_id,
+            ).order_by(Inventory.quantity.desc()).limit(1).with_for_update()
+        )
+
+    inventory = inv_r.scalar_one_or_none()
+
+    if not inventory:
+        raise HTTPException(status_code=400, detail="Остатки для данного товара не найдены")
+
+    if inventory.quantity < quantity:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Недостаточно товара: доступно {inventory.quantity}, запрошено {quantity}"
+        )
+
+    # Resolve store
+    if not store_id:
+        wh_r = await db.execute(select(Warehouse).where(Warehouse.id == inventory.warehouse_id))
+        wh = wh_r.scalar_one_or_none()
+        store_id = wh.store_id if wh else None
+
+    # UPDATE inventory (snapshot subtract)
+    inventory.quantity = inventory.quantity - quantity
+
+    # INSERT Sale (no warehouse_id on Sale model)
+    from datetime import date
+    sale = Sale(
+        product_id=product_id,
+        store_id=store_id,
+        quantity=quantity,
+        unit_price=unit_price or product.sale_price,
+        total_price=(unit_price or product.sale_price) * quantity,
+        sale_date=date.today(),
+    )
+    db.add(sale)
+
+    return {
+        "success": True,
+        "sale_id": sale.id,
+        "product": product.name,
+        "quantity_sold": quantity,
+        "inventory_remaining": inventory.quantity,
+        "message": f"Продажа записана. Остаток: {inventory.quantity} шт.",
+    }
 
 
 # ─── Capital ───────────────────────────────────────
