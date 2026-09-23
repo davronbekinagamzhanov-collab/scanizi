@@ -1,6 +1,7 @@
 """ScanIZI — Core configuration loaded from .env"""
 
 from pydantic_settings import BaseSettings
+from pydantic import model_validator
 from typing import Optional
 
 
@@ -24,6 +25,17 @@ class Settings(BaseSettings):
 
     # Environment
     ENVIRONMENT: str = "development"
+
+    @model_validator(mode="after")
+    def setup_db_urls(self) -> 'Settings':
+        if self.DATABASE_URL and self.DATABASE_URL.startswith("postgres://"):
+            self.DATABASE_URL = self.DATABASE_URL.replace("postgres://", "postgresql://", 1)
+            
+        if self.DATABASE_URL and self.DATABASE_URL.startswith("postgresql://"):
+            self.DATABASE_URL_SYNC = self.DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
+            self.DATABASE_URL = self.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+            
+        return self
 
     model_config = {
         "env_file": ".env",
