@@ -454,23 +454,38 @@ class AnalyticsEngine:
         if store_id:
             conditions.append(Sale.store_id == store_id)
 
-        # Daily sales for last 30 days
-        daily_sales = []
-        for i in range(30):
-            d = self.today - timedelta(days=i)
-            q = select(func.coalesce(func.sum(Sale.total_price), 0)).where(
-                Sale.sale_date == d
-            )
-            if conditions:
-                q = q.where(*conditions)
-            result = await self.db.execute(q)
-            total = result.scalar()
-            daily_sales.append({"date": d.isoformat(), "total": round(float(total), 2)})
+        # Daily sales for the last 30 days ? ONE grouped query.
+        thirty_ago = self.today - timedelta(days=30)
 
-        daily_sales.reverse()
+        daily_q = (
+            select(
+                Sale.sale_date,
+                func.coalesce(func.sum(Sale.total_price), 0).label("total"),
+            )
+            .where(Sale.sale_date >= thirty_ago)
+            .group_by(Sale.sale_date)
+            .order_by(Sale.sale_date)
+        )
+
+        if conditions:
+            daily_q = daily_q.where(*conditions)
+
+        daily_result = await self.db.execute(daily_q)
+
+        daily_map = {
+            row[0]: round(float(row[1] or 0), 2)
+            for row in daily_result.all()
+        }
+
+        daily_sales = [
+            {
+                "date": (self.today - timedelta(days=i)).isoformat(),
+                "total": daily_map.get(self.today - timedelta(days=i), 0),
+            }
+            for i in range(29, -1, -1)
+        ]
 
         # Top products by revenue 30d
-        thirty_ago = self.today - timedelta(days=30)
         top_q = (
             select(
                 Product.id, Product.name,

@@ -8,7 +8,6 @@ from app.auth.rbac import require_owner_or_manager
 from app.models.user import User, UserRole
 from app.analytics.engine import AnalyticsEngine
 from app.decision_engine.prioritizer import prioritize_products, get_attention_items
-from app.ai.analyzer import analyze_batch_with_ai, is_ai_available
 from app.schemas import DashboardResponse
 
 router = APIRouter(tags=["Обзор"])
@@ -34,20 +33,42 @@ async def get_dashboard(
     # 4. Get attention items
     attention = get_attention_items(prioritized, limit=5)
 
-    # 5. AI Analysis for top items
-    if attention:
-        ai_results = await analyze_batch_with_ai(attention)
-        for i, item in enumerate(attention):
-            for ai_r in ai_results:
-                if ai_r.get("product_id") == item["product_id"]:
-                    item["ai_analysis"] = ai_r
-                    break
+    # 5. INSTANT ANALYTICS EXPLANATION
+    # IMPORTANT:
+    # Never block the main dashboard on an external AI request.
+    # Gemini can be used later in a separate AI/recommendations flow.
 
-    # 6. AI availability flag
     for item in attention:
-        item["ai_available"] = is_ai_available()
+        item["ai_analysis"] = {
+            "recommendation": item["rec_type_label"],
+            "reason": (
+                f'????????? ??????: {item["priority"]}/100. '
+                f'????????? ???????: {round(item["inventory_value"], 2):,} ?. '
+                f'??????? ?? 30 ????: {item["sales_30d"]} ??. '
+                f'??? ??????: {item["days_without_sale"]} ????.'
+            ),
+            "evidence": {
+                "key_metrics": [
+                    "?????????_???????",
+                    "???????_30?",
+                    "????_???_??????",
+                    "????",
+                ],
+                "what_happened": item["rec_type_label"],
+                "why_important": (
+                    f'????????? ???????? ?????????? {item["priority"]}/100.'
+                ),
+                "what_to_do": (
+                    f'??????????? ????????: {item["rec_type_label"]}.'
+                ),
+            },
+            "confidence": item["confidence"],
+            "source": "analytics",
+        }
 
-    # 7. Frozen capital items ? reuse already calculated metrics.
+        item["ai_available"] = False
+
+    # 6. Frozen capital items ? reuse already calculated metrics.
     frozen = await engine.get_frozen_capital_products(
         limit=10,
         all_metrics=all_metrics,
