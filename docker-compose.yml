@@ -1,0 +1,23 @@
+name: scanizi
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: scanizi_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: scanizi
+      POSTGRES_USER: scanizi_user
+      POSTGRES_PASSWORD: scanizi_pass_2024
+    ports:
+      - "5432:5432"
+    volumes:
+      - scanizi_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scanizi_user -d scanizi"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  scanizi_pgdata:

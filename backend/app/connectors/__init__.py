@@ -1,0 +1,1 @@
+# ScanIZI connectors package
