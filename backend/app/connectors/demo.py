@@ -200,7 +200,7 @@ class DemoDataConnector(DataConnector):
             cat = categories[cat_name]
 
             # Generate multiple variants of each product to reach ~2000
-            variants_per_item = max(1, 2000 // sum(len(v) for v in CATEGORIES_PRODUCTS.values()))
+            variants_per_item = max(1, 500 // sum(len(v) for v in CATEGORIES_PRODUCTS.values()))
 
             for item_name, buy_price, sell_price in items:
                 for variant in range(variants_per_item + 1):
@@ -235,9 +235,9 @@ class DemoDataConnector(DataConnector):
                     db.flush()
                     products.append(product)
 
-                    if len(products) >= 2000:
+                    if len(products) >= 500:
                         break
-                if len(products) >= 2000:
+                if len(products) >= 500:
                     break
 
         # ─── Inventory + Sales ───────────────────────
@@ -258,7 +258,7 @@ class DemoDataConnector(DataConnector):
                 db.add(Inventory(product_id=product.id, warehouse_id=wh3.id, quantity=inv_qty3))
 
             # Sales: 12 months of history
-            for day_offset in range(90):
+            for day_offset in range(60):
                 sale_date = today - timedelta(days=day_offset)
                 month = sale_date.month
 
