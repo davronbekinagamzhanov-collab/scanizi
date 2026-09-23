@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     # Gemini AI
     GEMINI_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-2.0-flash"
 
     # Server
     BACKEND_HOST: str = "0.0.0.0"

@@ -60,7 +60,7 @@ async def analyze_portfolio(portfolio_metrics: Dict[str, Any]) -> Dict[str, Any]
 
     try:
         response = _gemini_client.models.generate_content(
-            model="gemini-2.0-flash",
+            model=settings.GEMINI_MODEL,
             contents=prompt,
             config={
                 "system_instruction": PORTFOLIO_SYSTEM_PROMPT,

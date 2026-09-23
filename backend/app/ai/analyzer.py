@@ -90,7 +90,7 @@ async def analyze_product_with_ai(metrics: Dict[str, Any]) -> Optional[Dict]:
 
     try:
         response = _gemini_client.models.generate_content(
-            model="gemini-3.8-flash",
+            model=settings.GEMINI_MODEL,
             contents=prompt,
             config={
                 "system_instruction": SYSTEM_PROMPT,

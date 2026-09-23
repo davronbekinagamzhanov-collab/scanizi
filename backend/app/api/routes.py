@@ -15,6 +15,7 @@ from app.decision_engine.prioritizer import prioritize_products, get_attention_i
 from app.decision_engine.scorer import compute_risk_score, determine_recommendation_type
 from app.ai.analyzer import analyze_product_with_ai, is_ai_available
 from app.ai.portfolio_analyzer import analyze_portfolio, prepare_portfolio_metrics
+from app.ai.excel_analyzer import analyze_excel_with_ai, read_file_for_analysis
 from app.auth.password import hash_password
 from app.schemas import SaleSummary
 
@@ -368,6 +369,7 @@ async def list_data_sources(
 async def import_file(
     file: UploadFile = File(...),
     warehouse_id: Optional[int] = Query(None),
+    column_mapping: Optional[str] = Form(None),  # JSON-encoded column mapping from AI
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_owner),
 ):
@@ -454,10 +456,19 @@ async def import_file(
     if current_user.store_id is None:
         current_user.store_id = target_store.id
 
+    # Parse AI-provided column mapping if supplied
+    parsed_mapping = {}
+    if column_mapping:
+        try:
+            parsed_mapping = json.loads(column_mapping)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     # Import real client data into ScanIZI database.
     result = await connector.import_data(
         file_data=content,
         warehouse_id=target_warehouse.id,
+        mapping=parsed_mapping,
     )
 
     # Register/update the source.
@@ -511,6 +522,47 @@ async def import_preview(
         raise HTTPException(status_code=400, detail="Поддерживаются только файлы Excel (.xlsx) и CSV (.csv)")
 
     return await connector.validate(content)
+
+
+@data_router.post("/ai-analyze")
+async def ai_analyze_file(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_owner),
+):
+    """
+    AI-powered file analysis. Reads the uploaded Excel/CSV and asks Gemini
+    to intelligently map columns to the product schema + summarize the file.
+    Returns the analysis without importing anything.
+    """
+    content = await file.read()
+    filename = file.filename or ""
+
+    if not filename.lower().endswith((".xlsx", ".xls", ".csv")):
+        raise HTTPException(
+            status_code=400,
+            detail="Поддерживаются только .xlsx, .xls, .csv"
+        )
+
+    # Read file structure
+    file_info = await read_file_for_analysis(content, filename)
+    if "error" in file_info:
+        return {"success": False, "error": file_info["error"]}
+
+    # Run AI analysis
+    analysis = await analyze_excel_with_ai(
+        headers=file_info["headers"],
+        sample_rows=file_info["sample_rows"],
+        total_rows=file_info["total_rows"],
+    )
+
+    # Add preview data so frontend can show sample rows
+    analysis["preview_data"] = file_info["sample_rows"][:5]
+    analysis["all_headers"] = file_info["headers"]
+    analysis["file_type"] = file_info["file_type"]
+    analysis["success"] = True
+    analysis["ai_available"] = is_ai_available()
+
+    return analysis
 
 
 # ─── Recommendations ───────────────────────────────
