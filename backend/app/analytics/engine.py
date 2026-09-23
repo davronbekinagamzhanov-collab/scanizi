@@ -157,16 +157,211 @@ class AnalyticsEngine:
         }
 
     async def compute_all_product_metrics(self) -> List[Dict[str, Any]]:
-        """Compute metrics for all active products."""
-        result = await self.db.execute(
-            select(Product.id).where(Product.is_active == True)
+        """Compute metrics for all active products using bulk DB queries."""
+        today = self.today
+        cutoff_365 = today - timedelta(days=365)
+        cutoff_90 = today - timedelta(days=90)
+        cutoff_60 = today - timedelta(days=60)
+        cutoff_30 = today - timedelta(days=30)
+        cutoff_7 = today - timedelta(days=7)
+
+        # 1. Load all active products in one query.
+        product_result = await self.db.execute(
+            select(Product).where(Product.is_active == True)
         )
-        product_ids = [row[0] for row in result.all()]
-        metrics = []
-        for pid in product_ids:
-            m = await self.compute_product_metrics(pid)
-            if m:
-                metrics.append(m)
+        products = product_result.scalars().all()
+
+        if not products:
+            return []
+
+        product_map = {p.id: p for p in products}
+        product_ids = list(product_map.keys())
+
+        # 2. Load all inventory in one query.
+        inv_result = await self.db.execute(
+            select(Inventory, Warehouse, Store)
+            .join(Warehouse, Inventory.warehouse_id == Warehouse.id)
+            .join(Store, Warehouse.store_id == Store.id)
+            .where(Inventory.product_id.in_(product_ids))
+        )
+        inventory_map: Dict[int, List[Dict[str, Any]]] = {
+            pid: [] for pid in product_ids
+        }
+
+        for inv, wh, st in inv_result.all():
+            inventory_map[inv.product_id].append({
+                "warehouse_id": wh.id,
+                "warehouse_name": wh.name,
+                "store_id": st.id,
+                "store_name": st.name,
+                "quantity": inv.quantity,
+            })
+
+        # 3. Load all sales for the last 365 days grouped by product/date.
+        sales_result = await self.db.execute(
+            select(
+                Sale.product_id,
+                Sale.sale_date,
+                func.sum(Sale.quantity).label("quantity"),
+                func.sum(Sale.total_price).label("revenue"),
+            )
+            .where(
+                Sale.product_id.in_(product_ids),
+                Sale.sale_date >= cutoff_365,
+            )
+            .group_by(Sale.product_id, Sale.sale_date)
+            .order_by(Sale.product_id, Sale.sale_date)
+        )
+
+        sales_map: Dict[int, List[Dict[str, Any]]] = {
+            pid: [] for pid in product_ids
+        }
+
+        for row in sales_result.all():
+            sales_map[row[0]].append({
+                "date": row[1],
+                "quantity": float(row[2] or 0),
+                "revenue": float(row[3] or 0),
+            })
+
+        metrics: List[Dict[str, Any]] = []
+
+        for product in products:
+            pid = product.id
+            inv_rows = inventory_map.get(pid, [])
+
+            total_quantity = sum(r["quantity"] for r in inv_rows)
+            inventory_value = total_quantity * product.purchase_price
+            potential_revenue = total_quantity * product.sale_price
+
+            inventory_by_warehouse = [
+                {
+                    "warehouse_id": r["warehouse_id"],
+                    "warehouse_name": r["warehouse_name"],
+                    "store_id": r["store_id"],
+                    "store_name": r["store_name"],
+                    "quantity": r["quantity"],
+                    "value": r["quantity"] * product.purchase_price,
+                }
+                for r in inv_rows
+            ]
+
+            rows = sales_map.get(pid, [])
+
+            sales_7d = sum(r["quantity"] for r in rows if r["date"] >= cutoff_7)
+            sales_30d = sum(r["quantity"] for r in rows if r["date"] >= cutoff_30)
+            sales_90d = sum(r["quantity"] for r in rows if r["date"] >= cutoff_90)
+            sales_365d = sum(r["quantity"] for r in rows)
+            revenue_30d = sum(r["revenue"] for r in rows if r["date"] >= cutoff_30)
+            revenue_90d = sum(r["revenue"] for r in rows if r["date"] >= cutoff_90)
+
+            sales_prev_30d = sum(
+                r["quantity"]
+                for r in rows
+                if cutoff_60 <= r["date"] < cutoff_30
+            )
+
+            last_sale = max((r["date"] for r in rows), default=None)
+            days_without_sale = (today - last_sale).days if last_sale else 999
+
+            sales_velocity = sales_30d / 30.0 if sales_30d > 0 else 0.0
+            avg_daily_sales = sales_90d / 90.0 if sales_90d > 0 else 0.0
+
+            days_of_stock = (
+                total_quantity / avg_daily_sales
+                if avg_daily_sales > 0 else 9999.0
+            )
+
+            turnover_days = (
+                total_quantity / (sales_30d / 30.0)
+                if sales_30d > 0 else 9999.0
+            )
+
+            margin = product.sale_price - product.purchase_price
+            margin_percent = (
+                margin / product.purchase_price * 100
+                if product.purchase_price > 0 else 0.0
+            )
+
+            if sales_prev_30d > 0:
+                sales_change = (
+                    (sales_30d - sales_prev_30d) / sales_prev_30d
+                ) * 100
+            elif sales_30d > 0:
+                sales_change = 100.0
+            else:
+                sales_change = 0.0
+
+            if sales_change > 15:
+                trend = "growing"
+            elif sales_change < -15:
+                trend = "declining"
+            else:
+                trend = "stable"
+
+            predicted_stock_30d = max(
+                0,
+                total_quantity - (avg_daily_sales * 30)
+            )
+
+            deficit_risk = (
+                avg_daily_sales > 0 and days_of_stock < 14
+            )
+
+            sales_history = [
+                {
+                    "date": r["date"].isoformat(),
+                    "quantity": r["quantity"],
+                    "revenue": round(r["revenue"], 2),
+                }
+                for r in rows
+                if r["date"] >= cutoff_90
+            ]
+
+            season_months = []
+            if product.season_months:
+                season_months = [
+                    int(m) for m in product.season_months.split(",")
+                ]
+
+            metrics.append({
+                "product_id": pid,
+                "product_name": product.name,
+                "sku": product.sku,
+                "barcode": product.barcode,
+                "category_id": product.category_id,
+                "purchase_price": product.purchase_price,
+                "sale_price": product.sale_price,
+                "margin": round(margin, 2),
+                "margin_percent": round(margin_percent, 1),
+                "total_quantity": total_quantity,
+                "inventory_value": round(inventory_value, 2),
+                "potential_revenue": round(potential_revenue, 2),
+                "sales_7d": int(sales_7d),
+                "sales_30d": int(sales_30d),
+                "sales_90d": int(sales_90d),
+                "sales_365d": int(sales_365d),
+                "revenue_30d": round(revenue_30d, 2),
+                "revenue_90d": round(revenue_90d, 2),
+                "last_sale_date": (
+                    last_sale.isoformat() if last_sale else None
+                ),
+                "days_without_sale": days_without_sale,
+                "sales_velocity": round(sales_velocity, 3),
+                "avg_daily_sales": round(avg_daily_sales, 3),
+                "days_of_stock": round(min(days_of_stock, 9999), 1),
+                "turnover_days": round(min(turnover_days, 9999), 1),
+                "sales_change_percent": round(sales_change, 1),
+                "trend": trend,
+                "predicted_stock_30d": round(predicted_stock_30d, 1),
+                "deficit_risk": deficit_risk,
+                "is_seasonal": product.is_seasonal,
+                "season_months": season_months,
+                "current_month": today.month,
+                "inventory_by_warehouse": inventory_by_warehouse,
+                "sales_history": sales_history,
+            })
+
         return metrics
 
     async def compute_dashboard_metrics(
