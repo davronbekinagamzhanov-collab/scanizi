@@ -1,6 +1,8 @@
 'use client';
 /**
  * ScanIZI — Dashboard layout (sidebar + content area)
+ * The Sidebar component now renders the mobile-topbar internally,
+ * so this layout only needs the standard flex container.
  */
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';

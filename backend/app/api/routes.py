@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from typing import Optional
+from datetime import datetime, timezone
 
 from app.db.database import get_db
 from app.auth.rbac import get_current_user, require_owner, require_owner_or_manager, require_any_role
@@ -13,6 +14,7 @@ from app.analytics.engine import AnalyticsEngine
 from app.decision_engine.prioritizer import prioritize_products, get_attention_items, REC_TYPE_LABELS
 from app.decision_engine.scorer import compute_risk_score, determine_recommendation_type
 from app.ai.analyzer import analyze_product_with_ai, is_ai_available
+from app.ai.portfolio_analyzer import analyze_portfolio, prepare_portfolio_metrics
 from app.auth.password import hash_password
 from app.schemas import SaleSummary
 
@@ -365,7 +367,7 @@ async def list_data_sources(
 @data_router.post("/import")
 async def import_file(
     file: UploadFile = File(...),
-    warehouse_id: int = Query(1),
+    warehouse_id: Optional[int] = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_owner),
 ):
@@ -387,8 +389,105 @@ async def import_file(
     if not validation.get("valid"):
         return validation
 
-    # Import
-    result = await connector.import_data(file_data=content, warehouse_id=warehouse_id)
+    # ---------------------------------------------------------
+    # Resolve destination warehouse.
+    #
+    # For a completely new ScanIZI installation there may be
+    # zero stores/warehouses. In that case create the first
+    # workspace automatically on the first real import.
+    # ---------------------------------------------------------
+
+    if warehouse_id is not None:
+        wh_result = await db.execute(
+            select(Warehouse, Store)
+            .join(Store, Warehouse.store_id == Store.id)
+            .where(
+                Warehouse.id == warehouse_id,
+                Warehouse.is_active == True,
+            )
+        )
+        warehouse_row = wh_result.first()
+    else:
+        wh_result = await db.execute(
+            select(Warehouse, Store)
+            .join(Store, Warehouse.store_id == Store.id)
+            .where(
+                Warehouse.is_active == True,
+                Store.is_active == True,
+            )
+            .order_by(Warehouse.id)
+            .limit(1)
+        )
+        warehouse_row = wh_result.first()
+
+    if warehouse_row:
+        target_warehouse, target_store = warehouse_row
+    else:
+        # First real client import.
+        store_result = await db.execute(
+            select(Store)
+            .where(Store.is_active == True)
+            .order_by(Store.id)
+            .limit(1)
+        )
+        target_store = store_result.scalar_one_or_none()
+
+        if not target_store:
+            target_store = Store(
+                name="Мой магазин",
+                address=None,
+                is_active=True,
+            )
+            db.add(target_store)
+            await db.flush()
+
+        target_warehouse = Warehouse(
+            name="Основной склад",
+            store_id=target_store.id,
+            address=None,
+            is_active=True,
+        )
+        db.add(target_warehouse)
+        await db.flush()
+
+    # Owner is attached to the first workspace when it exists.
+    if current_user.store_id is None:
+        current_user.store_id = target_store.id
+
+    # Import real client data into ScanIZI database.
+    result = await connector.import_data(
+        file_data=content,
+        warehouse_id=target_warehouse.id,
+    )
+
+    # Register/update the source.
+    if result.get("success"):
+        source_type = "CSV" if filename.lower().endswith(".csv") else "Excel"
+        records = int(result.get("products_imported", 0)) + int(
+            result.get("products_updated", 0)
+        )
+
+        source_result = await db.execute(
+            select(DataSource)
+            .where(DataSource.source_type == "file")
+            .order_by(DataSource.id)
+            .limit(1)
+        )
+        source = source_result.scalar_one_or_none()
+
+        if not source:
+            source = DataSource(
+                name=source_type,
+                source_type="file",
+                status="active",
+            )
+            db.add(source)
+
+        source.name = source_type
+        source.status = "active"
+        source.last_sync = datetime.now(timezone.utc)
+        source.records_imported = records
+
     return result
 
 
@@ -479,3 +578,24 @@ async def load_demo_data(
     connector = DemoDataConnector()
     result = await connector.import_data()
     return result
+
+
+# ─── AI Insights ───────────────────────────────────
+ai_router = APIRouter(prefix="/ai", tags=["ИИ"])
+
+
+@ai_router.get("/insights")
+async def get_ai_insights(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_owner_or_manager),
+):
+    """Портфельный AI-анализ бизнеса. Для владельцев и управляющих."""
+    engine = AnalyticsEngine(db)
+    dashboard_metrics = await engine.compute_dashboard_metrics()
+    portfolio_metrics = prepare_portfolio_metrics(dashboard_metrics)
+    analysis = await analyze_portfolio(portfolio_metrics)
+    return {
+        "analysis": analysis,
+        "metrics": portfolio_metrics,
+        "ai_available": is_ai_available(),
+    }

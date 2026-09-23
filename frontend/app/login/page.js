@@ -86,11 +86,6 @@ export default function LoginPage() {
             {submitting ? 'Вход...' : 'Войти в систему'}
           </button>
 
-          <div style={{ textAlign: 'center', marginTop: '0.5rem' }}>
-            <p className="text-muted" style={{ fontSize: '0.75rem' }}>
-              Демо-доступ: admin / admin
-            </p>
-          </div>
         </form>
       </div>
     </div>

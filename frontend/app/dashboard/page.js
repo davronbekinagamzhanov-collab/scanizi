@@ -4,7 +4,7 @@
  * Real data from backend API, not hardcoded.
  */
 import { useState, useEffect } from 'react';
-import { getDashboard, loadDemoData } from '@/lib/api';
+import { getDashboard } from '@/lib/api';
 import { formatCurrency, formatNumber, formatPercent, trendBadge, riskColor, recTypeColor } from '@/lib/utils';
 import { useAuth } from '@/lib/auth';
 import Link from 'next/link';
@@ -13,7 +13,7 @@ import {
 } from 'recharts';
 import {
   AlertTriangle, TrendingDown, TrendingUp, Package, DollarSign,
-  Activity, ShoppingCart, Warehouse, BrainCircuit, Loader2, Database
+  Activity, ShoppingCart, Warehouse, BrainCircuit
 } from 'lucide-react';
 
 export default function DashboardPage() {
@@ -21,7 +21,6 @@ export default function DashboardPage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [loadingDemo, setLoadingDemo] = useState(false);
 
   const fetchData = async () => {
     setLoading(true);
@@ -37,16 +36,7 @@ export default function DashboardPage() {
 
   useEffect(() => { fetchData(); }, []);
 
-  const handleLoadDemo = async () => {
-    setLoadingDemo(true);
-    try {
-      await loadDemoData();
-      await fetchData();
-    } catch (err) {
-      setError(err.message);
-    }
-    setLoadingDemo(false);
-  };
+
 
   if (loading) {
     return (
@@ -65,12 +55,6 @@ export default function DashboardPage() {
           <h3>Ошибка загрузки</h3>
           <p className="text-muted">{error}</p>
           <button className="btn btn-primary" onClick={fetchData}>Повторить</button>
-          {isOwner && (
-            <button className="btn btn-secondary" onClick={handleLoadDemo} disabled={loadingDemo}>
-              <Database size={16} />
-              {loadingDemo ? 'Загрузка...' : 'Загрузить демо-данные'}
-            </button>
-          )}
         </div>
       </div>
     );
@@ -81,26 +65,22 @@ export default function DashboardPage() {
   const frozen = data?.frozen_capital_items || [];
   const chart = data?.sales_chart || [];
 
-  // If no data yet, show demo data loader
+  // Empty installation: show onboarding prompt.
   if (m.total_products === 0) {
     return (
       <div className="page-content">
         <div className="empty-state">
           <Package size={64} />
-          <h2>Добро пожаловать в ScanIZI</h2>
-          <p className="text-muted" style={{ maxWidth: 400 }}>
-            Для начала работы загрузите товары из Excel/CSV файла или активируйте демо-данные для знакомства с системой.
+          <h2>ScanIZI готов к работе</h2>
+          <p className="text-muted" style={{ maxWidth: 440 }}>
+            В базе пока нет товаров. Загрузите прайс-лист в формате
+            Excel или CSV, чтобы система начала анализировать
+            остатки и строить аналитику.
           </p>
           {isOwner && (
-            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', justifyContent: 'center' }}>
-              <button className="btn btn-primary" onClick={handleLoadDemo} disabled={loadingDemo}>
-                <Database size={16} />
-                {loadingDemo ? 'Генерация данных...' : 'Загрузить демо-данные (~2000 товаров)'}
-              </button>
-              <Link href="/dashboard/data" className="btn btn-secondary">
-                Импорт из Excel/CSV
-              </Link>
-            </div>
+            <Link href="/dashboard/data" className="btn btn-primary">
+              Загрузить Excel / CSV
+            </Link>
           )}
         </div>
       </div>

@@ -24,6 +24,7 @@ from app.api.routes import (
     data_router,
     recommendations_router,
     demo_router,
+    ai_router,
 )
 
 
@@ -70,6 +71,7 @@ app.include_router(scanner_router)
 app.include_router(data_router)
 app.include_router(recommendations_router)
 app.include_router(demo_router)
+app.include_router(ai_router)
 
 
 @app.get("/health")

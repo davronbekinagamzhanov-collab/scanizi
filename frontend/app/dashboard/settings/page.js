@@ -29,7 +29,7 @@ export default function SettingsPage() {
               <div style={{ display: 'flex', justifyContent: 'space-between' }}><span className="text-muted">Валюта</span><span>KZT (₸)</span></div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}><span className="text-muted">Язык</span><span>Русский</span></div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}><span className="text-muted">Тема</span><span>Тёмная</span></div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}><span className="text-muted">API Backend</span><span style={{ fontFamily: 'monospace' }}>localhost:8000</span></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}><span className="text-muted">API Backend</span><span style={{ fontFamily: 'monospace', fontSize: '0.75rem', wordBreak: 'break-all' }}>{process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}</span></div>
             </div>
           </div>
         </div>

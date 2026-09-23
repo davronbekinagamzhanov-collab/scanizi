@@ -1,25 +1,35 @@
 /**
  * ScanIZI — API Client
- * All backend requests go through this module.
+ * Hardened: timeouts, error normalization, auth handling, no infinite loading.
  */
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL ||
-  (typeof window !== 'undefined' &&
-  window.location.hostname !== 'localhost' &&
-  window.location.hostname !== '127.0.0.1'
-    ? 'https://scanizi.onrender.com'
-    : 'http://localhost:8000');
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+const DEFAULT_TIMEOUT_MS = 10000;   // 10s — normal requests
+const AI_TIMEOUT_MS = 20000;        // 20s — AI analysis
+const UPLOAD_TIMEOUT_MS = 60000;    // 60s — file uploads
 
 class ApiError extends Error {
   constructor(status, message, data) {
     super(message);
     this.status = status;
     this.data = data;
+    this.name = 'ApiError';
   }
 }
 
-async function request(endpoint, options = {}) {
+function normalizeError(err) {
+  if (err.name === 'AbortError') {
+    return new ApiError(408, 'Превышено время ожидания. Проверьте соединение.', {});
+  }
+  if (err instanceof ApiError) return err;
+  if (!navigator.onLine) {
+    return new ApiError(0, 'Нет интернет-соединения.', {});
+  }
+  return new ApiError(0, err.message || 'Сетевая ошибка', {});
+}
+
+async function request(endpoint, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const token = typeof window !== 'undefined' ? localStorage.getItem('scanizi_token') : null;
 
   const headers = {
@@ -31,31 +41,47 @@ async function request(endpoint, options = {}) {
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  // Remove Content-Type for FormData
+  // Remove Content-Type for FormData — browser sets it with boundary
   if (options.body instanceof FormData) {
     delete headers['Content-Type'];
   }
 
-  const response = await fetch(`${API_BASE}${endpoint}`, {
-    ...options,
-    headers,
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (response.status === 401) {
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('scanizi_token');
-      localStorage.removeItem('scanizi_user');
-      window.location.href = '/login';
+  try {
+    const response = await fetch(`${API_BASE}${endpoint}`, {
+      ...options,
+      headers,
+      signal: controller.signal,
+    });
+
+    clearTimeout(timer);
+
+    if (response.status === 401) {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('scanizi_token');
+        localStorage.removeItem('scanizi_user');
+        window.location.href = '/login';
+      }
+      throw new ApiError(401, 'Сессия истекла. Войдите снова.');
     }
-    throw new ApiError(401, 'Сессия истекла');
-  }
 
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new ApiError(response.status, data.detail || 'Ошибка сервера', data);
-  }
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new ApiError(
+        response.status,
+        data.detail || `Ошибка сервера (${response.status})`,
+        data
+      );
+    }
 
-  return response.json();
+    return response.json();
+  } catch (err) {
+    clearTimeout(timer);
+    if (err instanceof ApiError) throw err;
+    throw normalizeError(err);
+  }
 }
 
 // ─── Auth ────────────────────────────────────────────
@@ -77,6 +103,11 @@ export async function getMe() {
 // ─── Dashboard ──────────────────────────────────────
 export async function getDashboard() {
   return request('/dashboard');
+}
+
+// ─── AI Insights (separate, non-blocking) ───────────
+export async function getAiInsights() {
+  return request('/ai/insights', {}, AI_TIMEOUT_MS);
 }
 
 // ─── Products ───────────────────────────────────────
@@ -151,13 +182,14 @@ export async function getDataSources() {
   return request('/data/sources');
 }
 
-export async function importFile(file, warehouse_id = 1) {
+export async function importFile(file, warehouse_id) {
   const formData = new FormData();
   formData.append('file', file);
-  return request(`/data/import?warehouse_id=${warehouse_id}`, {
+  const qs = warehouse_id ? `?warehouse_id=${warehouse_id}` : '';
+  return request(`/data/import${qs}`, {
     method: 'POST',
     body: formData,
-  });
+  }, UPLOAD_TIMEOUT_MS);
 }
 
 export async function previewImport(file) {
@@ -166,7 +198,7 @@ export async function previewImport(file) {
   return request('/data/import/preview', {
     method: 'POST',
     body: formData,
-  });
+  }, UPLOAD_TIMEOUT_MS);
 }
 
 // ─── Recommendations ────────────────────────────────
@@ -174,14 +206,9 @@ export async function getRecommendations(limit = 20) {
   return request(`/recommendations?limit=${limit}`);
 }
 
-// ─── Demo ───────────────────────────────────────────
-export async function loadDemoData() {
-  return request('/demo/load', { method: 'POST' });
-}
-
 // ─── Health ─────────────────────────────────────────
 export async function healthCheck() {
-  return request('/health');
+  return request('/health', {}, 5000);
 }
 
 export { ApiError };
