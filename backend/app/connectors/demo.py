@@ -258,7 +258,7 @@ class DemoDataConnector(DataConnector):
                 db.add(Inventory(product_id=product.id, warehouse_id=wh3.id, quantity=inv_qty3))
 
             # Sales: 12 months of history
-            for day_offset in range(365):
+            for day_offset in range(90):
                 sale_date = today - timedelta(days=day_offset)
                 month = sale_date.month
 
