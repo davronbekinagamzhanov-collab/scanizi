@@ -30,8 +30,9 @@ from app.api.routes import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Create tables on startup."""
-    await create_tables()
+    """Create tables on startup (only in development)."""
+    if settings.ENVIRONMENT != "production":
+        await create_tables()
     yield
 
 

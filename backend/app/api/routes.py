@@ -87,9 +87,18 @@ async def get_sales_summary(
     return await engine.get_sales_summary(store_id)
 
 
+from pydantic import BaseModel, Field
+
+class SaleCreate(BaseModel):
+    product_id: int
+    warehouse_id: Optional[int] = None
+    store_id: Optional[int] = None
+    quantity: float = Field(..., gt=0, description="Quantity must be greater than 0")
+    unit_price: Optional[float] = Field(0.0, ge=0.0, description="Unit price must be non-negative")
+
 @sales_router.post("")
 async def record_sale(
-    data: dict,
+    data: SaleCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_owner_or_manager),
 ):
@@ -98,15 +107,11 @@ async def record_sale(
     ACID: SELECT inventory FOR UPDATE → check stock → UPDATE inventory → INSERT Sale.
     Rejects overselling. Full rollback on any error.
     """
-    from sqlalchemy import text
-    product_id = data.get("product_id")
-    warehouse_id = data.get("warehouse_id")
-    store_id = data.get("store_id")
-    quantity = float(data.get("quantity", 0))
-    unit_price = float(data.get("unit_price", 0))
-
-    if not product_id or quantity <= 0:
-        raise HTTPException(status_code=400, detail="product_id и quantity обязательны")
+    product_id = data.product_id
+    warehouse_id = data.warehouse_id
+    store_id = data.store_id
+    quantity = data.quantity
+    unit_price = data.unit_price
 
     # Validate product exists
     prod_r = await db.execute(select(Product).where(Product.id == product_id))
@@ -187,15 +192,18 @@ async def get_frozen_capital(
     frozen_products = await engine.get_frozen_capital_products(limit=50)
 
     # By category
+    # PRELOAD categories to avoid N+1 (PHASE 3)
+    cat_ids = {p.get("category_id") for p in frozen_products if p.get("category_id")}
+    cat_map = {}
+    if cat_ids:
+        cat_result = await db.execute(select(Category.id, Category.name).where(Category.id.in_(cat_ids)))
+        cat_map = {row.id: row.name for row in cat_result.all()}
+
     by_category = {}
     for p in frozen_products:
-        cat = p.get("category_id", 0)
-        # Get category name
-        if cat:
-            cat_r = await db.execute(select(Category.name).where(Category.id == cat))
-            cat_name = cat_r.scalar() or "Без категории"
-        else:
-            cat_name = "Без категории"
+        cat = p.get("category_id")
+        cat_name = cat_map.get(cat, "Без категории") if cat else "Без категории"
+        
         if cat_name not in by_category:
             by_category[cat_name] = 0
         by_category[cat_name] += p["inventory_value"]
@@ -241,18 +249,26 @@ async def list_stores(
     result = await db.execute(select(Store).where(Store.is_active == True))
     stores = result.scalars().all()
 
+    # PHASE 3: N+1 elimination
+    if not stores:
+        return []
+        
+    store_ids = [s.id for s in stores]
+    wh_counts_res = await db.execute(
+        select(Warehouse.store_id, func.count(Warehouse.id))
+        .where(Warehouse.store_id.in_(store_ids))
+        .group_by(Warehouse.store_id)
+    )
+    wh_counts = dict(wh_counts_res.all())
+
     items = []
     for s in stores:
-        wh_count = (await db.execute(
-            select(func.count(Warehouse.id)).where(Warehouse.store_id == s.id)
-        )).scalar()
-
         items.append({
             "id": s.id,
             "name": s.name,
             "address": s.address,
             "is_active": s.is_active,
-            "warehouse_count": wh_count,
+            "warehouse_count": wh_counts.get(s.id, 0),
         })
 
     return items
@@ -275,24 +291,34 @@ async def list_warehouses(
     )
     rows = result.all()
 
+    # PHASE 3: Bulk query inventory for warehouses
+    if not rows:
+        return []
+        
+    wh_ids = [wh.id for wh, _ in rows]
+    inv_res = await db.execute(
+        select(
+            Inventory.warehouse_id,
+            func.count(Inventory.id),
+            func.coalesce(func.sum(Inventory.quantity), 0),
+        )
+        .where(Inventory.warehouse_id.in_(wh_ids), Inventory.quantity > 0)
+        .group_by(Inventory.warehouse_id)
+    )
+    
+    inv_map = {row[0]: (row[1], float(row[2])) for row in inv_res.all()}
+
     items = []
     for wh, store_name in rows:
-        inv = await db.execute(
-            select(
-                func.count(Inventory.id),
-                func.coalesce(func.sum(Inventory.quantity), 0),
-            ).where(Inventory.warehouse_id == wh.id, Inventory.quantity > 0)
-        )
-        inv_row = inv.one()
-
+        count, qty = inv_map.get(wh.id, (0, 0.0))
         items.append({
             "id": wh.id,
             "name": wh.name,
             "store_id": wh.store_id,
             "store_name": store_name,
             "address": wh.address,
-            "product_count": inv_row[0],
-            "total_quantity": float(inv_row[1]),
+            "product_count": count,
+            "total_quantity": qty,
         })
 
     return items
@@ -465,16 +491,8 @@ async def delete_data_source(
         raise HTTPException(status_code=404, detail="Источник данных не найден")
         
     try:
-        # Import models locally to avoid circular dependencies if any, though they are imported above
-        from app.models.recommendation import Recommendation
-        
-        # Clear data linked to imports
-        await db.execute(delete(Recommendation))
-        await db.execute(delete(Sale))
-        await db.execute(delete(Inventory))
-        await db.execute(delete(Product))
-        await db.execute(delete(Category))
-        
+        # SAFE DELETE (PHASE 6): Do NOT delete global products/inventory.
+        # Only reset the metadata.
         if source.source_type == "file":
             await db.execute(delete(DataSource).where(DataSource.id == source_id))
         else:
@@ -482,7 +500,7 @@ async def delete_data_source(
             source.last_sync = None
             source.status = "not_connected"
             
-        return {"success": True, "message": "Данные источника успешно удалены"}
+        return {"success": True, "message": "Источник отключён/удалён (данные товаров сохранены)"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка при удалении: {str(e)}")
 
@@ -714,12 +732,15 @@ async def get_recommendations(
     # Only products that need action
     actionable = [p for p in prioritized if p["rec_type"] != "NO_ACTION"][:limit]
 
+    cat_ids = {p.get("category_id") for p in actionable if p.get("category_id")}
+    cat_map = {}
+    if cat_ids:
+        cat_r = await db.execute(select(Category.id, Category.name).where(Category.id.in_(cat_ids)))
+        cat_map = {row.id: row.name for row in cat_r.all()}
+
     results = []
     for p in actionable:
-        cat_name = None
-        if p.get("category_id"):
-            cat_r = await db.execute(select(Category.name).where(Category.id == p["category_id"]))
-            cat_name = cat_r.scalar()
+        cat_name = cat_map.get(p.get("category_id"))
 
         results.append({
             "product_id": p["product_id"],

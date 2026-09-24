@@ -112,7 +112,7 @@ export default function DataPage() {
   };
 
   const handleDeleteSource = async (id) => {
-    if (!confirm('Вы уверены, что хотите удалить этот источник и все его данные (товары, остатки, продажи)? Это действие необратимо.')) return;
+    if (!confirm('Вы уверены, что хотите удалить/отключить этот источник данных? Загруженные товары при этом НЕ будут удалены.')) return;
     try {
       await deleteDataSource(id);
       await loadSources();
