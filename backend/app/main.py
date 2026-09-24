@@ -16,6 +16,7 @@ from app.api.dashboard import router as dashboard_router
 from app.api.products import router as products_router
 from app.api.routes import (
     sales_router,
+    purchases_router,
     capital_router,
     stores_router,
     warehouses_router,
@@ -64,6 +65,7 @@ app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(products_router)
 app.include_router(sales_router)
+app.include_router(purchases_router)
 app.include_router(capital_router)
 app.include_router(stores_router)
 app.include_router(warehouses_router)

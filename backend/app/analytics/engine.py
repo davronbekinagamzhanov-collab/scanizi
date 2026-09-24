@@ -11,7 +11,7 @@ from typing import List, Dict, Optional, Any
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Product, Sale, Inventory, Warehouse, Store, Category
+from app.models import Product, Sale, Purchase, Inventory, Warehouse, Store, Category
 
 
 class AnalyticsEngine:
@@ -230,6 +230,33 @@ class AnalyticsEngine:
                 "revenue": float(row[3] or 0),
             })
 
+        # 3.1. Load all purchases for the last 365 days grouped by product/date.
+        purchases_result = await self.db.execute(
+            select(
+                Purchase.product_id,
+                Purchase.purchase_date,
+                func.sum(Purchase.quantity).label("quantity"),
+                func.sum(Purchase.total_cost).label("cost"),
+            )
+            .where(
+                Purchase.product_id.in_(target_product_ids),
+                Purchase.purchase_date >= cutoff_365,
+            )
+            .group_by(Purchase.product_id, Purchase.purchase_date)
+            .order_by(Purchase.product_id, Purchase.purchase_date)
+        )
+
+        purchases_map: Dict[int, List[Dict[str, Any]]] = {
+            pid: [] for pid in target_product_ids
+        }
+
+        for row in purchases_result.all():
+            purchases_map[row[0]].append({
+                "date": row[1],
+                "quantity": float(row[2] or 0),
+                "cost": float(row[3] or 0),
+            })
+
         metrics: List[Dict[str, Any]] = []
 
         for product in products:
@@ -253,6 +280,7 @@ class AnalyticsEngine:
             ]
 
             rows = sales_map.get(pid, [])
+            p_rows = purchases_map.get(pid, [])
 
             sales_7d = sum(r["quantity"] for r in rows if r["date"] >= cutoff_7)
             sales_30d = sum(r["quantity"] for r in rows if r["date"] >= cutoff_30)
@@ -260,6 +288,16 @@ class AnalyticsEngine:
             sales_365d = sum(r["quantity"] for r in rows)
             revenue_30d = sum(r["revenue"] for r in rows if r["date"] >= cutoff_30)
             revenue_90d = sum(r["revenue"] for r in rows if r["date"] >= cutoff_90)
+
+            purchases_7d = sum(r["quantity"] for r in p_rows if r["date"] >= cutoff_7)
+            purchases_30d = sum(r["quantity"] for r in p_rows if r["date"] >= cutoff_30)
+            purchases_90d = sum(r["quantity"] for r in p_rows if r["date"] >= cutoff_90)
+            purchase_cost_7d = sum(r["cost"] for r in p_rows if r["date"] >= cutoff_7)
+            purchase_cost_30d = sum(r["cost"] for r in p_rows if r["date"] >= cutoff_30)
+            purchase_cost_90d = sum(r["cost"] for r in p_rows if r["date"] >= cutoff_90)
+
+            last_purchase = max((r["date"] for r in p_rows), default=None)
+            days_since_last_purchase = (today - last_purchase).days if last_purchase else 999
 
             sales_prev_30d = sum(
                 r["quantity"]
@@ -366,6 +404,14 @@ class AnalyticsEngine:
                 "current_month": today.month,
                 "inventory_by_warehouse": inventory_by_warehouse,
                 "sales_history": sales_history,
+                "purchases_7d": purchases_7d,
+                "purchases_30d": purchases_30d,
+                "purchases_90d": purchases_90d,
+                "purchase_cost_7d": purchase_cost_7d,
+                "purchase_cost_30d": purchase_cost_30d,
+                "purchase_cost_90d": purchase_cost_90d,
+                "last_purchase_date": last_purchase.isoformat() if last_purchase else None,
+                "days_since_last_purchase": days_since_last_purchase,
             })
 
         return metrics
@@ -545,6 +591,93 @@ class AnalyticsEngine:
             "top_products": top_products,
             "sales_by_category": sales_by_category,
             "daily_sales": daily_sales,
+        }
+
+    async def get_purchases_summary(self, store_id: Optional[int] = None) -> Dict:
+        """Compute purchases summary."""
+        conditions = []
+        if store_id:
+            conditions.append(Purchase.store_id == store_id)
+
+        thirty_ago = self.today - timedelta(days=30)
+        daily_q = (
+            select(
+                Purchase.purchase_date,
+                func.coalesce(func.sum(Purchase.total_cost), 0).label("total"),
+            )
+            .where(Purchase.purchase_date >= thirty_ago)
+            .group_by(Purchase.purchase_date)
+            .order_by(Purchase.purchase_date)
+        )
+        if conditions:
+            daily_q = daily_q.where(*conditions)
+        daily_result = await self.db.execute(daily_q)
+        daily_map = {row[0]: round(float(row[1] or 0), 2) for row in daily_result.all()}
+
+        daily_purchases = [
+            {
+                "date": (self.today - timedelta(days=i)).isoformat(),
+                "total": daily_map.get(self.today - timedelta(days=i), 0),
+            }
+            for i in range(29, -1, -1)
+        ]
+
+        top_q = (
+            select(
+                Product.id, Product.name,
+                func.sum(Purchase.quantity).label("qty"),
+                func.sum(Purchase.total_cost).label("cost")
+            )
+            .join(Product, Purchase.product_id == Product.id)
+            .where(Purchase.purchase_date >= thirty_ago)
+        )
+        if conditions:
+            top_q = top_q.where(*conditions)
+        top_q = top_q.group_by(Product.id, Product.name).order_by(
+            func.sum(Purchase.total_cost).desc()
+        ).limit(10)
+        top_result = await self.db.execute(top_q)
+        top_products = [
+            {"product_id": r[0], "name": r[1], "quantity": float(r[2]), "cost": round(float(r[3]), 2)}
+            for r in top_result.all()
+        ]
+
+        cat_q = (
+            select(
+                Category.name,
+                func.sum(Purchase.total_cost).label("cost")
+            )
+            .join(Product, Purchase.product_id == Product.id)
+            .join(Category, Product.category_id == Category.id)
+            .where(Purchase.purchase_date >= thirty_ago)
+        )
+        if conditions:
+            cat_q = cat_q.where(*conditions)
+        cat_q = cat_q.group_by(Category.name).order_by(func.sum(Purchase.total_cost).desc())
+        cat_result = await self.db.execute(cat_q)
+        purchases_by_category = [
+            {"category": r[0], "cost": round(float(r[1]), 2)}
+            for r in cat_result.all()
+        ]
+
+        async def _get_total_cost(days: int):
+            q = select(func.coalesce(func.sum(Purchase.total_cost), 0))
+            if days > 0:
+                q = q.where(Purchase.purchase_date >= self.today - timedelta(days=days))
+            else:
+                q = q.where(Purchase.purchase_date == self.today)
+            if conditions:
+                q = q.where(*conditions)
+            return round(float((await self.db.execute(q)).scalar()), 2)
+
+        return {
+            "total_purchases_today": await _get_total_cost(0),
+            "total_purchases_7d": await _get_total_cost(7),
+            "total_purchases_30d": await _get_total_cost(30),
+            "total_purchases_90d": await _get_total_cost(90),
+            "top_products": top_products,
+            "purchases_by_category": purchases_by_category,
+            "daily_purchases": daily_purchases,
         }
 
     async def get_transfer_suggestions(self) -> List[Dict]:

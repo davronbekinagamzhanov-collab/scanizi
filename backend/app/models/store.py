@@ -20,3 +20,4 @@ class Store(Base):
     users = relationship("User", back_populates="store")
     warehouses = relationship("Warehouse", back_populates="store")
     sales = relationship("Sale", back_populates="store")
+    purchases = relationship("Purchase", back_populates="store")

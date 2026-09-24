@@ -13,6 +13,7 @@ class Sale(Base):
     id = Column(Integer, primary_key=True, index=True)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False, index=True)
     store_id = Column(Integer, ForeignKey("stores.id"), nullable=False, index=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=True, index=True) # Added for Phase 3
     quantity = Column(Float, nullable=False)
     unit_price = Column(Float, nullable=False)
     total_price = Column(Float, nullable=False)
@@ -22,3 +23,4 @@ class Sale(Base):
     # Relationships
     product = relationship("Product", back_populates="sales")
     store = relationship("Store", back_populates="sales")
+    warehouse = relationship("Warehouse", back_populates="sales")

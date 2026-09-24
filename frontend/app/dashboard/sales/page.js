@@ -1,9 +1,11 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { getSalesSummary } from '@/lib/api';
 import { formatCurrency, formatNumber } from '@/lib/utils';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell } from 'recharts';
 import { TrendingUp, ShoppingCart } from 'lucide-react';
+
+import Operations from './Operations';
 
 const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#f43f5e', '#0ea5e9', '#8b5cf6', '#ec4899', '#14b8a6'];
 
@@ -11,8 +13,12 @@ export default function SalesPage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const loadData = () => {
     getSalesSummary().then(setData).catch(() => {}).finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    loadData();
   }, []);
 
   if (loading) return <div className="loading-page"><div className="spinner" /></div>;
@@ -22,11 +28,15 @@ export default function SalesPage() {
     <>
       <div className="page-header">
         <div className="page-title-group">
-          <h1 className="page-title">Продажи</h1>
-          <p className="page-subtitle">Аналитика выручки и топ-товаров</p>
+          <h1 className="page-title">Продажи и Приходы</h1>
+          <p className="page-subtitle">Операции и аналитика выручки</p>
         </div>
       </div>
       <div className="page-content">
+        <Suspense fallback={<div>Loading operations...</div>}>
+          <Operations onUpdate={loadData} />
+        </Suspense>
+        
         <div className="grid-4" style={{ marginBottom: '1.5rem' }}>
           <div className="metric-card"><div className="metric-label">Сегодня</div><div className="metric-value">{formatCurrency(d.total_sales_today)}</div></div>
           <div className="metric-card"><div className="metric-label">7 дней</div><div className="metric-value">{formatCurrency(d.total_sales_7d)}</div></div>

@@ -378,9 +378,15 @@ export default function ScannerPage() {
                 </>
               )}
 
-              <div style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-color)' }}>
+              <div style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '8px' }}>
                 <Link href={`/dashboard/products/${result.product.id}`} className="btn btn-sm btn-secondary">
-                  Открыть карточку товара →
+                  Карточка товара →
+                </Link>
+                <Link href={`/dashboard/sales?code=${result.product.sku}&mode=sale`} className="btn btn-sm btn-primary">
+                  Продать
+                </Link>
+                <Link href={`/dashboard/sales?code=${result.product.sku}&mode=purchase`} className="btn btn-sm btn-success">
+                  Приход
                 </Link>
               </div>
             </div>

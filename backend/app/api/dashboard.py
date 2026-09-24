@@ -74,9 +74,14 @@ async def get_dashboard(
         all_metrics=all_metrics,
     )
 
-    # 8. Sales chart (30 days)
+    # 8. Sales and purchases summary
     sales_summary = await engine.get_sales_summary()
     sales_chart = sales_summary.get("daily_sales", [])
+    purchases_summary = await engine.get_purchases_summary()
+
+    revenue_30d = sales_summary.get("total_sales_30d", 0)
+    purchase_costs_30d = purchases_summary.get("total_purchases_30d", 0)
+    gross_profit_30d = revenue_30d - purchase_costs_30d
 
     # Store counts
     from sqlalchemy import select, func
@@ -89,6 +94,9 @@ async def get_dashboard(
             **dashboard_metrics,
             "total_stores": stores_count,
             "total_warehouses": wh_count,
+            "revenue_30d": revenue_30d,
+            "purchase_costs_30d": purchase_costs_30d,
+            "gross_profit_30d": gross_profit_30d,
         },
         attention_items=attention,
         frozen_capital_items=[{

@@ -152,6 +152,9 @@ class DashboardMetrics(BaseModel):
     potential_deficit: int = 0
     avg_stock_age_days: float = 0.0
     sales_30d: float = 0.0
+    revenue_30d: float = 0.0
+    purchase_costs_30d: float = 0.0
+    gross_profit_30d: float = 0.0
     turnover_days: float = 0.0
     total_products: int = 0
     total_stores: int = 0

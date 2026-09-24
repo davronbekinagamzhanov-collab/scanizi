@@ -88,13 +88,15 @@ async def get_sales_summary(
 
 
 from pydantic import BaseModel, Field
+from app.services.transaction_service import InventoryTransactionService
 
 class SaleCreate(BaseModel):
     product_id: int
     warehouse_id: Optional[int] = None
     store_id: Optional[int] = None
     quantity: float = Field(..., gt=0, description="Quantity must be greater than 0")
-    unit_price: Optional[float] = Field(0.0, ge=0.0, description="Unit price must be non-negative")
+    unit_price: Optional[float] = Field(None, ge=0.0, description="Unit price must be non-negative")
+    sale_date: Optional[str] = None
 
 @sales_router.post("")
 async def record_sale(
@@ -107,75 +109,78 @@ async def record_sale(
     ACID: SELECT inventory FOR UPDATE → check stock → UPDATE inventory → INSERT Sale.
     Rejects overselling. Full rollback on any error.
     """
-    product_id = data.product_id
-    warehouse_id = data.warehouse_id
-    store_id = data.store_id
-    quantity = data.quantity
-    unit_price = data.unit_price
+    svc = InventoryTransactionService(db)
+    return await svc.record_sale(data.model_dump(exclude_unset=True))
 
-    # Validate product exists
-    prod_r = await db.execute(select(Product).where(Product.id == product_id))
-    product = prod_r.scalar_one_or_none()
-    if not product:
-        raise HTTPException(status_code=404, detail="Товар не найден")
 
-    # Resolve warehouse: use provided or find first warehouse of product
-    if warehouse_id:
-        inv_r = await db.execute(
-            select(Inventory).where(
-                Inventory.product_id == product_id,
-                Inventory.warehouse_id == warehouse_id,
-            ).with_for_update()
-        )
-    else:
-        inv_r = await db.execute(
-            select(Inventory).where(
-                Inventory.product_id == product_id,
-            ).order_by(Inventory.quantity.desc()).limit(1).with_for_update()
-        )
+class PurchaseCreate(BaseModel):
+    product_id: int
+    warehouse_id: int
+    store_id: Optional[int] = None
+    quantity: float = Field(..., gt=0, description="Quantity must be greater than 0")
+    unit_cost: Optional[float] = Field(None, ge=0.0)
+    purchase_date: Optional[str] = None
+    supplier: Optional[str] = None
 
-    inventory = inv_r.scalar_one_or_none()
+purchases_router = APIRouter(prefix="/purchases", tags=["Приходы"])
 
-    if not inventory:
-        raise HTTPException(status_code=400, detail="Остатки для данного товара не найдены")
+@purchases_router.post("")
+async def record_purchase(
+    data: PurchaseCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_owner_or_manager),
+):
+    """Record a purchase/restock transaction."""
+    svc = InventoryTransactionService(db)
+    return await svc.record_purchase(data.model_dump(exclude_unset=True))
 
-    if inventory.quantity < quantity:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Недостаточно товара: доступно {inventory.quantity}, запрошено {quantity}"
-        )
+@purchases_router.get("")
+async def list_purchases(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_any_role),
+):
+    offset = (page - 1) * page_size
+    query = select(Purchase, Product.name, Product.sku, Warehouse.name, Store.name).join(Product, Purchase.product_id == Product.id).join(Warehouse, Purchase.warehouse_id == Warehouse.id).join(Store, Purchase.store_id == Store.id).order_by(Purchase.purchase_date.desc(), Purchase.id.desc()).offset(offset).limit(page_size)
+    result = await db.execute(query)
+    rows = result.all()
+    
+    count_q = select(func.count(Purchase.id))
+    total = (await db.execute(count_q)).scalar()
 
-    # Resolve store
-    if not store_id:
-        wh_r = await db.execute(select(Warehouse).where(Warehouse.id == inventory.warehouse_id))
-        wh = wh_r.scalar_one_or_none()
-        store_id = wh.store_id if wh else None
-
-    # UPDATE inventory (snapshot subtract)
-    inventory.quantity = inventory.quantity - quantity
-
-    # INSERT Sale (no warehouse_id on Sale model)
-    from datetime import date
-    sale = Sale(
-        product_id=product_id,
-        store_id=store_id,
-        quantity=quantity,
-        unit_price=unit_price or product.sale_price,
-        total_price=(unit_price or product.sale_price) * quantity,
-        sale_date=date.today(),
-    )
-    db.add(sale)
-    await db.flush()
-
+    items = []
+    for p, prod_name, sku, wh_name, store_name in rows:
+        items.append({
+            "id": p.id,
+            "product_id": p.product_id,
+            "product_name": prod_name,
+            "sku": sku,
+            "warehouse": wh_name,
+            "store": store_name,
+            "quantity": p.quantity,
+            "unit_cost": p.unit_cost,
+            "total_cost": p.total_cost,
+            "purchase_date": p.purchase_date,
+            "supplier": p.supplier,
+        })
+        
     return {
-        "success": True,
-        "sale_id": sale.id,
-        "product": product.name,
-        "quantity_sold": quantity,
-        "inventory_remaining": inventory.quantity,
-        "message": f"Продажа записана. Остаток: {inventory.quantity} шт.",
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
     }
 
+@purchases_router.get("/summary")
+async def get_purchases_summary(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_owner_or_manager),
+):
+    engine = AnalyticsEngine(db)
+    # Re-use sales summary logic style or define a new one in engine
+    # We will implement this in AnalyticsEngine shortly.
+    return await engine.get_purchases_summary()
 
 # ─── Capital ───────────────────────────────────────
 capital_router = APIRouter(prefix="/capital", tags=["Капитал"])

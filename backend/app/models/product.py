@@ -29,4 +29,5 @@ class Product(Base):
     category = relationship("Category", back_populates="products")
     inventory = relationship("Inventory", back_populates="product")
     sales = relationship("Sale", back_populates="product")
+    purchases = relationship("Purchase", back_populates="product")
     recommendations = relationship("Recommendation", back_populates="product")

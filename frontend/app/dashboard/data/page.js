@@ -148,6 +148,42 @@ export default function DataPage() {
         </p>
       </div>
 
+      {/* ── Demo API Info Block ── */}
+      <div style={{
+        background: 'rgba(59,130,246,0.1)',
+        border: '1px solid rgba(59,130,246,0.3)',
+        borderRadius: '12px',
+        padding: '16px 20px',
+        marginBottom: '24px'
+      }}>
+        <h2 style={{ fontSize: '16px', fontWeight: '700', color: '#93c5fd', margin: '0 0 12px' }}>
+          ℹ️ Источник данных
+        </h2>
+        <p style={{ color: '#bfdbfe', fontSize: '14px', lineHeight: '1.5', margin: '0 0 12px', fontWeight: '500' }}>
+          API магазина пока не подключён. Поэтому для демонстрации и тестирования используются Excel-файлы. Вы можете загружать файл, изменять данные и повторно загружать его, чтобы проверить работу импорта, остатков и операций.
+        </p>
+        <p style={{ color: '#94a3b8', fontSize: '13px', lineHeight: '1.5', margin: '0 0 16px' }}>
+          Позже ScanIZI сможет подключаться к POS/ERP-системе магазина через API и автоматически получать изменения данных.
+        </p>
+        
+        <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '18px' }}>📊</span>
+            <span style={{ color: '#f1f5f9', fontSize: '14px', fontWeight: '500' }}>Excel</span>
+            <span style={{ background: 'rgba(22,163,74,0.2)', color: '#86efac', padding: '2px 8px', borderRadius: '4px', fontSize: '12px' }}>
+              Demo / подключён
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '18px' }}>🔌</span>
+            <span style={{ color: '#f1f5f9', fontSize: '14px', fontWeight: '500' }}>External API</span>
+            <span style={{ background: 'rgba(71,85,105,0.4)', color: '#94a3b8', padding: '2px 8px', borderRadius: '4px', fontSize: '12px' }}>
+              пока не подключён
+            </span>
+          </div>
+        </div>
+      </div>
+
       {/* ── Drop zone / File selector ── */}
       {step === 'idle' || step === 'error' ? (
         <div
