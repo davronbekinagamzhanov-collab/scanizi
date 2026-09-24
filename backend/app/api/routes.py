@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from app.db.database import get_db
 from app.auth.rbac import get_current_user, require_owner, require_owner_or_manager, require_any_role
 from app.models.user import User, UserRole
-from app.models import Product, Store, Warehouse, Category, Inventory, Sale, DataSource
+from app.models import Product, Store, Warehouse, Category, Inventory, Sale, Purchase, DataSource
 from app.analytics.engine import AnalyticsEngine
 from app.decision_engine.prioritizer import prioritize_products, get_attention_items, REC_TYPE_LABELS
 from app.decision_engine.scorer import compute_risk_score, determine_recommendation_type
@@ -38,9 +38,10 @@ async def get_sales(
     cutoff = date.today() - timedelta(days=days)
 
     query = (
-        select(Sale, Product.name.label("product_name"), Store.name.label("store_name"))
+        select(Sale, Product.name.label("product_name"), Store.name.label("store_name"), Warehouse.name.label("wh_name"))
         .join(Product, Sale.product_id == Product.id)
         .join(Store, Sale.store_id == Store.id)
+        .outerjoin(Warehouse, Sale.warehouse_id == Warehouse.id)
         .where(Sale.sale_date >= cutoff)
     )
     if store_id:
@@ -61,12 +62,14 @@ async def get_sales(
     rows = result.all()
 
     items = []
-    for sale, product_name, store_name in rows:
+    for sale, product_name, store_name, wh_name in rows:
         items.append({
             "id": sale.id,
             "product_id": sale.product_id,
             "product_name": product_name,
             "store_name": store_name,
+            "warehouse_id": sale.warehouse_id,
+            "warehouse_name": wh_name,
             "quantity": sale.quantity,
             "unit_price": sale.unit_price,
             "total_price": sale.total_price,
@@ -422,9 +425,15 @@ async def scanner_lookup(
     if not product:
         return {"found": False, "message": "Товар не найден", "product": None, "inventory": []}
 
-    # Get inventory
+    # Get inventory with warehouse_id, store_id
     inv_result = await db.execute(
-        select(Inventory, Warehouse.name.label("wh_name"), Store.name.label("store_name"))
+        select(
+            Inventory,
+            Warehouse.id.label("wh_id"),
+            Warehouse.name.label("wh_name"),
+            Store.id.label("st_id"),
+            Store.name.label("store_name"),
+        )
         .join(Warehouse, Inventory.warehouse_id == Warehouse.id)
         .join(Store, Warehouse.store_id == Store.id)
         .where(Inventory.product_id == product.id)
@@ -432,10 +441,12 @@ async def scanner_lookup(
     inv_rows = inv_result.all()
 
     inventory = [{
+        "warehouse_id": wh_id,
         "warehouse": wh_name,
+        "store_id": st_id,
         "store": store_name,
         "quantity": inv.quantity,
-    } for inv, wh_name, store_name in inv_rows]
+    } for inv, wh_id, wh_name, st_id, store_name in inv_rows]
 
     cat_name = None
     if product.category_id:
@@ -456,7 +467,7 @@ async def scanner_lookup(
             "unit": product.unit,
         },
         "inventory": inventory,
-        "total_quantity": sum(inv.quantity for inv, _, _ in inv_rows),
+        "total_quantity": sum(inv.quantity for inv, *_ in inv_rows),
     }
 
 

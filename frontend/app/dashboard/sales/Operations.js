@@ -73,12 +73,12 @@ export default function Operations({ onUpdate }) {
       };
       
       if (mode === 'sale') {
-        payload.unit_price = parseFloat(price) || 0;
+        payload.unit_price = price === '' || isNaN(parseFloat(price)) ? null : parseFloat(price);
         payload.sale_date = date;
         const res = await recordSale(payload);
         setSuccess(res.message || 'Продажа успешна');
       } else {
-        payload.unit_cost = parseFloat(price) || 0;
+        payload.unit_cost = price === '' || isNaN(parseFloat(price)) ? null : parseFloat(price);
         payload.purchase_date = date;
         payload.supplier = supplier;
         const res = await recordPurchase(payload);

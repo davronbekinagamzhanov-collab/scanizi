@@ -11,99 +11,47 @@ import { ScanBarcode, Search, Package, Camera, CameraOff, X, AlertCircle } from 
 import Link from 'next/link';
 
 /* ─── Camera Scanner component ──────────────────────────────────────────── */
-function CameraScanner({ onDetect, onClose }) {
-  const videoRef = useRef(null);
-  const streamRef = useRef(null);
-  const animRef = useRef(null);
-  const detectorRef = useRef(null);
+import { Html5Qrcode } from 'html5-qrcode';
 
+function CameraScanner({ onDetect, onClose }) {
   const [status, setStatus] = useState('starting'); // starting | scanning | error
   const [errorMsg, setErrorMsg] = useState('');
-
-  const stopStream = useCallback(() => {
-    if (animRef.current) cancelAnimationFrame(animRef.current);
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop());
-      streamRef.current = null;
-    }
-  }, []);
-
-  // Barcode detection loop
-  const scanLoop = useCallback(async () => {
-    if (!videoRef.current || !detectorRef.current) return;
-    const video = videoRef.current;
-    if (video.readyState < 2) {
-      animRef.current = requestAnimationFrame(scanLoop);
-      return;
-    }
-    try {
-      const barcodes = await detectorRef.current.detect(video);
-      if (barcodes.length > 0) {
-        const code = barcodes[0].rawValue;
-        stopStream();
-        onDetect(code);
-        return;
-      }
-    } catch (e) {
-      // Detection can fail on individual frames — just continue
-    }
-    animRef.current = requestAnimationFrame(scanLoop);
-  }, [onDetect, stopStream]);
+  const scannerRef = useRef(null);
 
   useEffect(() => {
     let mounted = true;
+    const scannerId = "reader";
 
     const startCamera = async () => {
-      // Check BarcodeDetector support
-      if (!('BarcodeDetector' in window)) {
-        setStatus('error');
-        setErrorMsg('Браузер не поддерживает BarcodeDetector API. Используйте Chrome/Edge или введите код вручную.');
-        return;
-      }
-
       try {
-        // Check supported formats
-        const supported = await window.BarcodeDetector.getSupportedFormats();
-        detectorRef.current = new window.BarcodeDetector({
-          formats: ['ean_13', 'ean_8', 'code_128', 'code_39', 'qr_code', 'data_matrix']
-            .filter(f => supported.includes(f)),
-        });
-      } catch {
-        detectorRef.current = new window.BarcodeDetector();
-      }
-
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: 'environment' }, // Rear camera on mobile
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
+        const html5QrCode = new Html5Qrcode(scannerId);
+        scannerRef.current = html5QrCode;
+        
+        await html5QrCode.start(
+          { facingMode: "environment" },
+          {
+            fps: 10,
+            qrbox: { width: 250, height: 150 },
+            formatsToSupport: [0, 1, 3, 4, 8, 11] // CODE_128, CODE_39, EAN_13, EAN_8, QR_CODE, DATA_MATRIX
           },
-        });
-
-        if (!mounted) {
-          stream.getTracks().forEach(t => t.stop());
-          return;
-        }
-
-        streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.play();
-        }
-
-        setStatus('scanning');
-        animRef.current = requestAnimationFrame(scanLoop);
-
+          (decodedText, decodedResult) => {
+            if (mounted) {
+              onDetect(decodedText);
+              html5QrCode.stop().catch(console.error);
+            }
+          },
+          (errorMessage) => {
+            // parse errors are normal (frame didn't contain code)
+          }
+        );
+        if (mounted) setStatus('scanning');
       } catch (err) {
         if (!mounted) return;
         setStatus('error');
-        if (err.name === 'NotAllowedError') {
+        if (err?.name === 'NotAllowedError' || err?.message?.includes('Permission')) {
           setErrorMsg('Доступ к камере запрещён. Разрешите доступ в настройках браузера.');
-        } else if (err.name === 'NotFoundError') {
-          setErrorMsg('Камера не обнаружена на устройстве.');
         } else {
-          setErrorMsg(`Ошибка камеры: ${err.message}`);
+          setErrorMsg(`Ошибка камеры: ${err?.message || 'Неизвестная ошибка'}`);
         }
       }
     };
@@ -112,19 +60,20 @@ function CameraScanner({ onDetect, onClose }) {
 
     return () => {
       mounted = false;
-      stopStream();
+      if (scannerRef.current && scannerRef.current.isScanning) {
+        scannerRef.current.stop().catch(console.error);
+      }
     };
-  }, [scanLoop, stopStream]);
+  }, [onDetect]);
 
   return (
     <div style={{
       position: 'relative', borderRadius: 'var(--border-radius-lg)',
-      overflow: 'hidden', background: '#000', aspectRatio: '4/3',
-      maxWidth: 480, width: '100%',
+      overflow: 'hidden', background: '#000',
+      maxWidth: 480, width: '100%', margin: '0 auto'
     }}>
-      {/* Close button */}
       <button
-        onClick={() => { stopStream(); onClose(); }}
+        onClick={onClose}
         style={{
           position: 'absolute', top: 10, right: 10, zIndex: 10,
           background: 'rgba(0,0,0,0.6)', border: 'none', borderRadius: '50%',
@@ -136,52 +85,13 @@ function CameraScanner({ onDetect, onClose }) {
         <X size={18} />
       </button>
 
-      {status === 'scanning' && (
-        <>
-          <video
-            ref={videoRef}
-            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-            playsInline
-            muted
-            aria-label="Камера для сканирования"
-          />
-          {/* Scan frame overlay */}
-          <div style={{
-            position: 'absolute', inset: 0, display: 'flex',
-            alignItems: 'center', justifyContent: 'center', pointerEvents: 'none',
-          }}>
-            <div style={{
-              width: '65%', height: '30%', border: '2px solid rgba(99,102,241,0.8)',
-              borderRadius: 12, boxShadow: '0 0 0 9999px rgba(0,0,0,0.45)',
-              position: 'relative',
-            }}>
-              {/* Animated scan line */}
-              <div style={{
-                position: 'absolute', left: 4, right: 4, top: '50%',
-                height: 2, background: 'linear-gradient(90deg, transparent, var(--primary-400), transparent)',
-                animation: 'scanLine 1.8s ease-in-out infinite',
-              }} />
-              <style>{`
-                @keyframes scanLine {
-                  0%, 100% { opacity: 0.3; transform: translateY(-200%); }
-                  50% { opacity: 1; transform: translateY(200%); }
-                }
-              `}</style>
-            </div>
-          </div>
-          <div style={{
-            position: 'absolute', bottom: 12, left: 0, right: 0,
-            textAlign: 'center', color: 'rgba(255,255,255,0.75)', fontSize: '0.8125rem',
-          }}>
-            Наведите камеру на штрихкод
-          </div>
-        </>
-      )}
+      <div id="reader" style={{ width: '100%', minHeight: 300, background: '#000' }}></div>
 
       {status === 'starting' && (
         <div style={{
           position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
           alignItems: 'center', justifyContent: 'center', gap: '0.75rem', color: 'white',
+          background: '#000'
         }}>
           <div className="spinner" />
           <span style={{ fontSize: '0.875rem', color: 'rgba(255,255,255,0.7)' }}>Запуск камеры...</span>
@@ -193,6 +103,7 @@ function CameraScanner({ onDetect, onClose }) {
           position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
           alignItems: 'center', justifyContent: 'center', gap: '0.75rem',
           color: 'var(--danger-400)', padding: '1.5rem', textAlign: 'center',
+          background: '#000'
         }}>
           <AlertCircle size={36} />
           <span style={{ fontSize: '0.875rem', lineHeight: 1.5 }}>{errorMsg}</span>
@@ -212,11 +123,10 @@ export default function ScannerPage() {
   const [cameraSupported, setCameraSupported] = useState(false);
   const inputRef = useRef(null);
 
-  // Detect camera + BarcodeDetector support on mount
+  // Detect camera support on mount
   useEffect(() => {
     const hasMedia = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
-    const hasDetector = 'BarcodeDetector' in window;
-    setCameraSupported(hasMedia && hasDetector);
+    setCameraSupported(hasMedia);
   }, []);
 
   const doLookup = useCallback(async (barcode) => {
@@ -418,7 +328,7 @@ export default function ScannerPage() {
               {!cameraSupported && (
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <AlertCircle size={16} style={{ flexShrink: 0, color: 'var(--text-muted)', marginTop: 2 }} />
-                  <span className="text-muted">Авто-сканирование доступно в Chrome 83+ и Edge 83+</span>
+                  <span className="text-muted">Для работы авто-сканирования разрешите доступ к камере или используйте HTTPS</span>
                 </div>
               )}
             </div>

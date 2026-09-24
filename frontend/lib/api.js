@@ -155,15 +155,6 @@ export async function recordSale(data) {
   });
 }
 
-export async function getSales(params = {}) {
-  const qs = new URLSearchParams(params).toString();
-  return request(`/sales${qs ? '?' + qs : ''}`);
-}
-
-export async function getSalesSummary() {
-  return request('/sales/summary');
-}
-
 export async function recordPurchase(data) {
   return request('/purchases', {
     method: 'POST',
