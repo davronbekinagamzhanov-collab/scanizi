@@ -160,6 +160,7 @@ async def record_sale(
         sale_date=date.today(),
     )
     db.add(sale)
+    await db.flush()
 
     return {
         "success": True,
@@ -462,12 +463,16 @@ async def import_file(
     content = await file.read()
     filename = file.filename or ""
 
-    if filename.endswith((".xlsx", ".xls")):
+    extension = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+
+    if extension == "xlsx":
         from app.connectors.excel import ExcelConnector
         connector = ExcelConnector()
-    elif filename.endswith(".csv"):
+    elif extension == "csv":
         from app.connectors.excel import CSVConnector
         connector = CSVConnector()
+    elif extension == "xls":
+        raise HTTPException(status_code=400, detail="Формат .xls устарел и не поддерживается. Пожалуйста, сохраните файл как .xlsx или .csv.")
     else:
         raise HTTPException(status_code=400, detail="Поддерживаются только файлы Excel (.xlsx) и CSV (.csv)")
 
@@ -554,6 +559,7 @@ async def import_file(
         file_data=content,
         warehouse_id=target_warehouse.id,
         mapping=parsed_mapping,
+        db=db,
     )
 
     # Register/update the source.
@@ -597,12 +603,16 @@ async def import_preview(
     content = await file.read()
     filename = file.filename or ""
 
-    if filename.endswith((".xlsx", ".xls")):
+    extension = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+
+    if extension == "xlsx":
         from app.connectors.excel import ExcelConnector
         connector = ExcelConnector()
-    elif filename.endswith(".csv"):
+    elif extension == "csv":
         from app.connectors.excel import CSVConnector
         connector = CSVConnector()
+    elif extension == "xls":
+        raise HTTPException(status_code=400, detail="Формат .xls устарел и не поддерживается. Пожалуйста, сохраните файл как .xlsx или .csv.")
     else:
         raise HTTPException(status_code=400, detail="Поддерживаются только файлы Excel (.xlsx) и CSV (.csv)")
 

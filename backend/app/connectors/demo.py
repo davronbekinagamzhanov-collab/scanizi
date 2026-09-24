@@ -138,7 +138,11 @@ class DemoDataConnector(DataConnector):
         return {"valid": True}
 
     async def import_data(self, **kwargs) -> Dict[str, Any]:
-        """Generate and insert all demo data synchronously."""
+        """Generate and insert all demo data in a thread to avoid blocking the event loop."""
+        import asyncio
+        return await asyncio.to_thread(self._sync_import_data)
+
+    def _sync_import_data(self):
         db = SyncSessionLocal()
         try:
             return self._seed_all(db)

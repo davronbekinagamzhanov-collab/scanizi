@@ -223,181 +223,223 @@ class ExcelConnector(DataConnector):
         if not file_data:
             return {"success": False, "message": "Файл не предоставлен."}
 
-        try:
-            import openpyxl
-            wb = openpyxl.load_workbook(
-                io.BytesIO(file_data), read_only=True, data_only=True
-            )
-            ws = wb.active
-            rows = list(ws.iter_rows(values_only=True))
-            wb.close()
+        db = kwargs.get("db")
+        if not db:
+            return {"success": False, "message": "Критическая ошибка: отсутствует подключение к базе данных."}
 
-            if not rows:
+        try:
+            import asyncio
+            
+            def extract_normalized_rows():
+                import openpyxl
+                wb = openpyxl.load_workbook(
+                    io.BytesIO(file_data), read_only=True, data_only=True
+                )
+                ws = wb.active
+                
+                rows_iter = ws.iter_rows(values_only=True)
+                try:
+                    first_row = next(rows_iter)
+                except StopIteration:
+                    wb.close()
+                    return None, []
+                
+                headers = [_normalize_str(h) if h is not None else f"col_{i}" for i, h in enumerate(first_row)]
+                col_map = _build_mapping(headers, mapping or {})
+                
+                normalized_data = []
+                for idx, row in enumerate(rows_iter, start=2):
+                    row_dict = {}
+                    for i, val in enumerate(row):
+                        if i < len(headers):
+                            row_dict[headers[i]] = _normalize_str(val) if val is not None else ""
+                            
+                    mapped = {}
+                    for header, value in row_dict.items():
+                        field = col_map.get(header)
+                        if field:
+                            mapped[field] = value
+                    normalized_data.append((idx, mapped, row_dict))
+                
+                wb.close()
+                return headers, normalized_data
+
+            headers, normalized_data = await asyncio.to_thread(extract_normalized_rows)
+            
+            if headers is None:
                 return {"success": False, "message": "Файл пустой."}
 
-            headers = [_normalize_str(h) for h in rows[0]]
-            return self._process_rows(headers, rows[1:], mapping or {}, warehouse_id)
+            return await self._process_rows_async(normalized_data, warehouse_id, db)
 
         except Exception as e:
             return {"success": False, "message": f"Ошибка импорта: {str(e)}"}
 
-    def _process_rows(
+    async def _process_rows_async(
         self,
-        headers: List[str],
-        data_rows,
-        ai_mapping: Dict,
+        normalized_data: List[Tuple[int, Dict[str, Any], Dict[str, Any]]],
         warehouse_id: int,
+        db: Any,
     ) -> Dict[str, Any]:
         """
         Process rows with full upsert + snapshot inventory.
-        - Product upsert: match by SKU, then barcode, then create
-        - Inventory upsert: SET quantity (snapshot, not accumulate)
-        - Category upsert: case-insensitive, no duplicates
-        - Row errors are isolated; bad row ≠ failed import
+        Avoid N+1 queries by prefetching.
         """
-        db = SyncSessionLocal()
+        from sqlalchemy import select, func as sqlfunc
+        
         imported = 0
         updated = 0
         errors = []
 
-        # Build final column→field mapping
-        col_map = _build_mapping(headers, ai_mapping)
+        unique_categories = set()
+        unique_skus = set()
+        unique_barcodes = set()
+        
+        for idx, mapped, raw in normalized_data:
+            cat_name = _normalize_category(mapped.get("category", ""))
+            if cat_name:
+                unique_categories.add(cat_name.lower())
+                
+            sku_raw = _normalize_str(mapped.get("sku", ""))
+            barcode_raw = _normalize_str(mapped.get("barcode", ""))
+            sku = sku_raw or f"IMP-{idx:06d}"
+            
+            unique_skus.add(sku)
+            if barcode_raw:
+                unique_barcodes.add(barcode_raw)
 
-        # Cache: category_name_lower → Category.id
-        category_cache: Dict[str, int] = {}
+        category_cache = {}
+        if unique_categories:
+            cat_result = await db.execute(
+                select(Category).where(sqlfunc.lower(Category.name).in_(unique_categories))
+            )
+            for c in cat_result.scalars().all():
+                category_cache[c.name.lower()] = c.id
+
+        product_cache_sku = {}
+        product_cache_barcode = {}
+        
+        if unique_skus:
+            p_result = await db.execute(
+                select(Product).where(Product.sku.in_(unique_skus))
+            )
+            for p in p_result.scalars().all():
+                product_cache_sku[p.sku] = p
+                if p.barcode:
+                    product_cache_barcode[p.barcode] = p
+
+        if unique_barcodes:
+            b_result = await db.execute(
+                select(Product).where(Product.barcode.in_(unique_barcodes))
+            )
+            for p in b_result.scalars().all():
+                if p.barcode:
+                    product_cache_barcode[p.barcode] = p
+                product_cache_sku[p.sku] = p
+
+        existing_product_ids = [p.id for p in product_cache_sku.values()]
+        inventory_cache = {}
+        if existing_product_ids:
+            inv_result = await db.execute(
+                select(Inventory).where(
+                    Inventory.product_id.in_(existing_product_ids),
+                    Inventory.warehouse_id == warehouse_id
+                )
+            )
+            for inv in inv_result.scalars().all():
+                inventory_cache[inv.product_id] = inv
 
         try:
-            for idx, row in enumerate(data_rows, start=2):
-                try:
-                    row_data = dict(zip(headers, row))
-
-                    # Apply mapping to get normalized field values
-                    mapped: Dict[str, Any] = {}
-                    for header, value in row_data.items():
-                        field = col_map.get(header)
-                        if field:
-                            mapped[field] = value
-
-                    # ─── Required: name ────────────────────────
-                    name = _normalize_str(mapped.get("name", ""))
-                    if not name:
-                        errors.append({
-                            "row": idx,
-                            "error": "Пропущено название товара",
-                            "data": str(row_data)[:120],
-                        })
-                        continue
-
-                    # ─── SKU / barcode ─────────────────────────
-                    sku_raw = _normalize_str(mapped.get("sku", ""))
-                    barcode_raw = _normalize_str(mapped.get("barcode", ""))
-                    sku = sku_raw or f"IMP-{idx:06d}"
-                    barcode = barcode_raw or None
-
-                    # ─── Prices ────────────────────────────────
-                    purchase_price = _normalize_number(mapped.get("purchase_price")) or 0.0
-                    sale_price = _normalize_number(mapped.get("sale_price")) or 0.0
-
-                    # ─── Quantity (snapshot) ───────────────────
-                    qty_raw = _normalize_number(mapped.get("quantity"))
-                    qty = qty_raw if qty_raw is not None else 0.0
-                    if qty < 0:
-                        qty = 0.0
-
-                    # ─── Unit ──────────────────────────────────
-                    unit = _normalize_str(mapped.get("unit", "шт.")) or "шт."
-
-                    # ─── Category (case-insensitive upsert) ────
-                    cat_name_raw = _normalize_str(mapped.get("category", ""))
-                    category_id = None
-                    if cat_name_raw:
-                        cat_name = _normalize_category(cat_name_raw)
-                        cat_key = cat_name.lower()
-                        if cat_key in category_cache:
-                            category_id = category_cache[cat_key]
-                        else:
-                            # Case-insensitive lookup
-                            from sqlalchemy import func as sqlfunc
-                            existing_cat = (
-                                db.query(Category)
-                                .filter(sqlfunc.lower(Category.name) == cat_key)
-                                .first()
-                            )
-                            if existing_cat:
-                                category_id = existing_cat.id
-                            else:
-                                new_cat = Category(name=cat_name)
-                                db.add(new_cat)
-                                db.flush()
-                                category_id = new_cat.id
-                            category_cache[cat_key] = category_id
-
-                    # ─── Product upsert ────────────────────────
-                    # 1. Try by SKU
-                    product = None
-                    if sku_raw:
-                        product = db.query(Product).filter(Product.sku == sku_raw).first()
-
-                    # 2. Try by barcode
-                    if product is None and barcode:
-                        product = db.query(Product).filter(Product.barcode == barcode).first()
-
-                    if product:
-                        # UPDATE all fields
-                        product.name = name
-                        if sku_raw:
-                            product.sku = sku_raw
-                        if barcode:
-                            product.barcode = barcode
-                        product.purchase_price = purchase_price
-                        product.sale_price = sale_price
-                        product.unit = unit
-                        product.category_id = category_id
-                        updated += 1
-                    else:
-                        # CREATE
-                        product = Product(
-                            name=name,
-                            sku=sku,
-                            barcode=barcode,
-                            purchase_price=purchase_price,
-                            sale_price=sale_price,
-                            unit=unit,
-                            category_id=category_id,
-                        )
-                        db.add(product)
-                        db.flush()
-                        imported += 1
-
-                    # ─── Inventory snapshot upsert ─────────────
-                    # Key: product_id + warehouse_id → SET (not ADD)
-                    existing_inv = (
-                        db.query(Inventory)
-                        .filter(
-                            Inventory.product_id == product.id,
-                            Inventory.warehouse_id == warehouse_id,
-                        )
-                        .first()
-                    )
-                    if existing_inv:
-                        # SNAPSHOT: replace quantity
-                        existing_inv.quantity = qty
-                    else:
-                        db.add(Inventory(
-                            product_id=product.id,
-                            warehouse_id=warehouse_id,
-                            quantity=qty,
-                        ))
-
-                except Exception as row_err:
+            for idx, mapped, row_data in normalized_data:
+                name = _normalize_str(mapped.get("name", ""))
+                if not name:
                     errors.append({
                         "row": idx,
-                        "error": str(row_err)[:200],
+                        "error": "Пропущено название товара",
+                        "data": str(row_data)[:120],
                     })
-                    # Continue processing next rows
                     continue
 
-            db.commit()
+                sku_raw = _normalize_str(mapped.get("sku", ""))
+                barcode_raw = _normalize_str(mapped.get("barcode", ""))
+                sku = sku_raw or f"IMP-{idx:06d}"
+                barcode = barcode_raw or None
+                
+                purchase_price = _normalize_number(mapped.get("purchase_price")) or 0.0
+                sale_price = _normalize_number(mapped.get("sale_price")) or 0.0
+                
+                qty_raw = _normalize_number(mapped.get("quantity"))
+                qty = qty_raw if qty_raw is not None else 0.0
+                if qty < 0:
+                    qty = 0.0
+                    
+                unit = _normalize_str(mapped.get("unit", "шт.")) or "шт."
+
+                category_id = None
+                cat_name_raw = _normalize_str(mapped.get("category", ""))
+                if cat_name_raw:
+                    cat_name = _normalize_category(cat_name_raw)
+                    cat_key = cat_name.lower()
+                    if cat_key in category_cache:
+                        category_id = category_cache[cat_key]
+                    else:
+                        new_cat = Category(name=cat_name)
+                        db.add(new_cat)
+                        await db.flush()
+                        category_id = new_cat.id
+                        category_cache[cat_key] = category_id
+
+                product = product_cache_sku.get(sku)
+                if not product and barcode:
+                    product = product_cache_barcode.get(barcode)
+                    
+                if product:
+                    product.name = name
+                    if sku_raw:
+                        product.sku = sku_raw
+                    if barcode:
+                        product.barcode = barcode
+                    product.purchase_price = purchase_price
+                    product.sale_price = sale_price
+                    product.unit = unit
+                    product.category_id = category_id
+                    
+                    product_cache_sku[product.sku] = product
+                    if product.barcode:
+                        product_cache_barcode[product.barcode] = product
+                        
+                    updated += 1
+                else:
+                    product = Product(
+                        name=name,
+                        sku=sku,
+                        barcode=barcode,
+                        purchase_price=purchase_price,
+                        sale_price=sale_price,
+                        unit=unit,
+                        category_id=category_id,
+                    )
+                    db.add(product)
+                    await db.flush()
+                    
+                    product_cache_sku[product.sku] = product
+                    if product.barcode:
+                        product_cache_barcode[product.barcode] = product
+                        
+                    imported += 1
+
+                existing_inv = inventory_cache.get(product.id)
+                if existing_inv:
+                    existing_inv.quantity = qty
+                else:
+                    new_inv = Inventory(
+                        product_id=product.id,
+                        warehouse_id=warehouse_id,
+                        quantity=qty,
+                    )
+                    db.add(new_inv)
+                    inventory_cache[product.id] = new_inv
+
+            # Do NOT commit here, transaction is managed by the route.
             return {
                 "success": True,
                 "products_imported": imported,
@@ -410,10 +452,7 @@ class ExcelConnector(DataConnector):
                 ),
             }
         except Exception as e:
-            db.rollback()
             return {"success": False, "message": f"Критическая ошибка: {str(e)}"}
-        finally:
-            db.close()
 
 
 class CSVConnector(DataConnector):
@@ -471,16 +510,34 @@ class CSVConnector(DataConnector):
         if not file_data:
             return {"success": False, "message": "Файл не предоставлен."}
 
+        db = kwargs.get("db")
+        if not db:
+            return {"success": False, "message": "Критическая ошибка: отсутствует подключение к базе данных."}
+
         try:
-            text = self._decode_csv(file_data)
-            reader = csv.DictReader(io.StringIO(text))
-            headers = [_normalize_str(h) for h in (reader.fieldnames or [])]
-            rows = [
-                tuple(_normalize_str(row.get(h, "")) for h in reader.fieldnames or [])
-                for row in csv.DictReader(io.StringIO(text))
-            ]
+            import asyncio
+            
+            def extract_normalized_csv():
+                text = self._decode_csv(file_data)
+                reader = csv.DictReader(io.StringIO(text))
+                headers = [_normalize_str(h) for h in (reader.fieldnames or [])]
+                col_map = _build_mapping(headers, mapping or {})
+                
+                normalized_data = []
+                for idx, row in enumerate(reader, start=2):
+                    row_data = {str(k): str(v) for k, v in row.items()}
+                    mapped = {}
+                    for header, value in row_data.items():
+                        field = col_map.get(header)
+                        if field:
+                            mapped[field] = value
+                    normalized_data.append((idx, mapped, row_data))
+                return headers, normalized_data
+
+            headers, normalized_data = await asyncio.to_thread(extract_normalized_csv)
+            
             excel = ExcelConnector()
-            return excel._process_rows(headers, rows, mapping or {}, warehouse_id)
+            return await excel._process_rows_async(normalized_data, warehouse_id, db)
         except Exception as e:
             return {"success": False, "message": f"Ошибка CSV: {str(e)}"}
 
