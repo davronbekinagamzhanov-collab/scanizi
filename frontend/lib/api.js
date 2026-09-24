@@ -193,6 +193,10 @@ export async function getDataSources() {
   return request('/data/sources');
 }
 
+export async function deleteDataSource(id) {
+  return request(`/data/sources/${id}`, { method: 'DELETE' });
+}
+
 /**
  * Step 1: AI analyzes file structure — returns column mapping + summary.
  * Does NOT import anything. Timeout: 20s.

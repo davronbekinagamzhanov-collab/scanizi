@@ -5,6 +5,7 @@ import {
   analyzeExcelWithAI,
   importFile,
   getDataSources,
+  deleteDataSource,
 } from '@/lib/api';
 
 // ─── Field label map ─────────────────────────────────────────────────────────
@@ -108,6 +109,17 @@ export default function DataPage() {
     setStep('idle');
     setEditMapping({});
     if (fileRef.current) fileRef.current.value = '';
+  };
+
+  const handleDeleteSource = async (id) => {
+    if (!confirm('Вы уверены, что хотите удалить этот источник и все его данные (товары, остатки, продажи)? Это действие необратимо.')) return;
+    try {
+      await deleteDataSource(id);
+      await loadSources();
+      // Optional: show a small success message if needed, or just let it refresh.
+    } catch (err) {
+      setErrorMsg(`Ошибка удаления: ${err.message}`);
+    }
   };
 
   // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -623,15 +635,38 @@ export default function DataPage() {
                   {s.status === 'active' ? 'Активен' : s.status}
                 </span>
               </div>
-              <div style={{ textAlign: 'right' }}>
-                <p style={{ color: '#94a3b8', fontSize: '12px', margin: '0 0 2px' }}>
-                  {s.records_imported || 0} записей
-                </p>
-                {s.last_sync && (
-                  <p style={{ color: '#475569', fontSize: '11px', margin: 0 }}>
-                    Синхронизация: {new Date(s.last_sync).toLocaleString('ru-RU')}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                <div style={{ textAlign: 'right' }}>
+                  <p style={{ color: '#94a3b8', fontSize: '12px', margin: '0 0 2px' }}>
+                    {s.records_imported || 0} записей
                   </p>
-                )}
+                  {s.last_sync && (
+                    <p style={{ color: '#475569', fontSize: '11px', margin: 0 }}>
+                      Синхронизация: {new Date(s.last_sync).toLocaleString('ru-RU')}
+                    </p>
+                  )}
+                </div>
+                <button
+                  onClick={() => handleDeleteSource(s.id)}
+                  title="Удалить источник и данные"
+                  style={{
+                    background: 'rgba(239,68,68,0.1)',
+                    border: '1px solid rgba(239,68,68,0.3)',
+                    color: '#f87171',
+                    borderRadius: '6px',
+                    padding: '6px 10px',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    transition: 'all 0.2s',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(239,68,68,0.2)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'rgba(239,68,68,0.1)'}
+                >
+                  🗑️ Удалить
+                </button>
               </div>
             </div>
           ))}

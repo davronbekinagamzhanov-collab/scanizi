@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, Query, HTTPException, UploadFile, File, Form
 import json
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from typing import Optional
 from datetime import datetime, timezone
 
@@ -449,6 +449,42 @@ async def list_data_sources(
         "last_sync": s.last_sync.isoformat() if s.last_sync else None,
         "records_imported": s.records_imported,
     } for s in sources]
+
+
+@data_router.delete("/sources/{source_id}")
+async def delete_data_source(
+    source_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_owner),
+):
+    """Delete a data source and wipe imported data."""
+    result = await db.execute(select(DataSource).where(DataSource.id == source_id))
+    source = result.scalar_one_or_none()
+    
+    if not source:
+        raise HTTPException(status_code=404, detail="Источник данных не найден")
+        
+    try:
+        # Import models locally to avoid circular dependencies if any, though they are imported above
+        from app.models.recommendation import Recommendation
+        
+        # Clear data linked to imports
+        await db.execute(delete(Recommendation))
+        await db.execute(delete(Sale))
+        await db.execute(delete(Inventory))
+        await db.execute(delete(Product))
+        await db.execute(delete(Category))
+        
+        if source.source_type == "file":
+            await db.execute(delete(DataSource).where(DataSource.id == source_id))
+        else:
+            source.records_imported = 0
+            source.last_sync = None
+            source.status = "not_connected"
+            
+        return {"success": True, "message": "Данные источника успешно удалены"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка при удалении: {str(e)}")
 
 
 @data_router.post("/import")
