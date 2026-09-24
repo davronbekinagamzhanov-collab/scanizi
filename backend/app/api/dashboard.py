@@ -42,24 +42,24 @@ async def get_dashboard(
         item["ai_analysis"] = {
             "recommendation": item["rec_type_label"],
             "reason": (
-                f'????????? ??????: {item["priority"]}/100. '
-                f'????????? ???????: {round(item["inventory_value"], 2):,} ?. '
-                f'??????? ?? 30 ????: {item["sales_30d"]} ??. '
-                f'??? ??????: {item["days_without_sale"]} ????.'
+                f'Показатель критичности: {item["priority"]}/100. '
+                f'Стоимость запаса: {round(item["inventory_value"], 2):,} ₽. '
+                f'Продажи за 30 дней: {item["sales_30d"]} шт. '
+                f'Дней без продаж: {item["days_without_sale"]} дней.'
             ),
             "evidence": {
                 "key_metrics": [
-                    "?????????_???????",
-                    "???????_30?",
-                    "????_???_??????",
-                    "????",
+                    "стоимость_запаса",
+                    "продажи_30д",
+                    "дней_без_продаж",
+                    "тренд",
                 ],
                 "what_happened": item["rec_type_label"],
                 "why_important": (
-                    f'????????? ???????? ?????????? {item["priority"]}/100.'
+                    f'Показатель проблемы достигает {item["priority"]}/100.'
                 ),
                 "what_to_do": (
-                    f'??????????? ????????: {item["rec_type_label"]}.'
+                    f'Рекомендуемое действие: {item["rec_type_label"]}.'
                 ),
             },
             "confidence": item["confidence"],

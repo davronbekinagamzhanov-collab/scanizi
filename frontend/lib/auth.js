@@ -8,8 +8,14 @@ import { login as apiLogin, getMe } from '@/lib/api';
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const cached = localStorage.getItem('scanizi_user');
+      return cached ? JSON.parse(cached) : null;
+    }
+    return null;
+  });
+  const [loading, setLoading] = useState(user === null);
   const [error, setError] = useState(null);
 
   const checkAuth = useCallback(async () => {

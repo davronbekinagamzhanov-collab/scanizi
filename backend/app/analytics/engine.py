@@ -156,7 +156,7 @@ class AnalyticsEngine:
             "sales_history": sales_history,
         }
 
-    async def compute_all_product_metrics(self) -> List[Dict[str, Any]]:
+    async def compute_all_product_metrics(self, product_ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
         """Compute metrics for all active products using bulk DB queries."""
         today = self.today
         cutoff_365 = today - timedelta(days=365)
@@ -166,26 +166,32 @@ class AnalyticsEngine:
         cutoff_7 = today - timedelta(days=7)
 
         # 1. Load all active products in one query.
-        product_result = await self.db.execute(
-            select(Product).where(Product.is_active == True)
-        )
+        query = select(Product)
+        if product_ids is not None:
+            if not product_ids:
+                return []
+            query = query.where(Product.id.in_(product_ids))
+        else:
+            query = query.where(Product.is_active == True)
+            
+        product_result = await self.db.execute(query)
         products = product_result.scalars().all()
 
         if not products:
             return []
 
         product_map = {p.id: p for p in products}
-        product_ids = list(product_map.keys())
+        target_product_ids = list(product_map.keys())
 
         # 2. Load all inventory in one query.
         inv_result = await self.db.execute(
             select(Inventory, Warehouse, Store)
             .join(Warehouse, Inventory.warehouse_id == Warehouse.id)
             .join(Store, Warehouse.store_id == Store.id)
-            .where(Inventory.product_id.in_(product_ids))
+            .where(Inventory.product_id.in_(target_product_ids))
         )
         inventory_map: Dict[int, List[Dict[str, Any]]] = {
-            pid: [] for pid in product_ids
+            pid: [] for pid in target_product_ids
         }
 
         for inv, wh, st in inv_result.all():
@@ -206,7 +212,7 @@ class AnalyticsEngine:
                 func.sum(Sale.total_price).label("revenue"),
             )
             .where(
-                Sale.product_id.in_(product_ids),
+                Sale.product_id.in_(target_product_ids),
                 Sale.sale_date >= cutoff_365,
             )
             .group_by(Sale.product_id, Sale.sale_date)
@@ -214,7 +220,7 @@ class AnalyticsEngine:
         )
 
         sales_map: Dict[int, List[Dict[str, Any]]] = {
-            pid: [] for pid in product_ids
+            pid: [] for pid in target_product_ids
         }
 
         for row in sales_result.all():
@@ -554,22 +560,48 @@ class AnalyticsEngine:
             .having(func.count(Inventory.warehouse_id) > 1)
         )
         multi_wh = result.all()
+        product_ids = [r[0] for r in multi_wh]
+
+        if not product_ids:
+            return []
+
+        # Bulk metrics for product names and inventory_by_warehouse
+        metrics_list = await self.compute_all_product_metrics(product_ids=product_ids)
+        metrics_map = {m["product_id"]: m for m in metrics_list}
+
+        # Bulk sales by store for the last 30 days
+        thirty_ago = self.today - timedelta(days=30)
+        sales_result = await self.db.execute(
+            select(
+                Sale.product_id,
+                Sale.store_id,
+                func.sum(Sale.quantity)
+            )
+            .where(
+                Sale.product_id.in_(product_ids),
+                Sale.sale_date >= thirty_ago
+            )
+            .group_by(Sale.product_id, Sale.store_id)
+        )
+        
+        # map: product_id -> {store_id: sales_count}
+        store_sales_map = {pid: {} for pid in product_ids}
+        for pid, sid, qty in sales_result.all():
+            store_sales_map[pid][sid] = float(qty or 0)
 
         suggestions = []
-        for product_id, _ in multi_wh:
-            metrics = await self.compute_product_metrics(product_id)
-            if not metrics or len(metrics["inventory_by_warehouse"]) < 2:
+        for product_id in product_ids:
+            metrics = metrics_map.get(product_id)
+            if not metrics or len(metrics.get("inventory_by_warehouse", [])) < 2:
                 continue
 
-            # Check for imbalance: one store has excess, another has deficit
             wh_data = metrics["inventory_by_warehouse"]
 
-            # Get sales by store
             store_sales = {}
             for wh in wh_data:
                 sid = wh["store_id"]
                 if sid not in store_sales:
-                    sales_count = await self._get_sales_count_by_store(product_id, sid, 30)
+                    sales_count = store_sales_map[product_id].get(sid, 0)
                     store_sales[sid] = {
                         "store_name": wh["store_name"],
                         "sales_30d": sales_count,
@@ -582,15 +614,13 @@ class AnalyticsEngine:
             if len(stores) < 2:
                 continue
 
-            # Sort by sales velocity (sales / quantity ratio)
             for s in stores:
                 s["velocity"] = s["sales_30d"] / max(s["total_qty"], 1)
 
             stores.sort(key=lambda x: x["velocity"])
-            low_vel = stores[0]  # excess stock, low sales
-            high_vel = stores[-1]  # low stock, high sales
+            low_vel = stores[0]
+            high_vel = stores[-1]
 
-            # Significant imbalance check
             if (low_vel["total_qty"] > high_vel["total_qty"] * 3
                     and high_vel["sales_30d"] > low_vel["sales_30d"] * 1.5):
                 suggested = min(

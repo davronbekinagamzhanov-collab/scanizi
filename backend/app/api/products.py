@@ -66,26 +66,31 @@ async def list_products(
     result = await db.execute(query)
     products = result.scalars().all()
 
-    # Enrich with analytics
+    # Get categories efficiently
+    category_ids = {p.category_id for p in products if p.category_id}
+    category_map = {}
+    if category_ids:
+        cat_r = await db.execute(select(Category.id, Category.name).where(Category.id.in_(category_ids)))
+        category_map = {row.id: row.name for row in cat_r.all()}
+
+    # Compute metrics efficiently
     engine = AnalyticsEngine(db)
+    product_ids = [p.id for p in products]
+    all_metrics = await engine.compute_all_product_metrics(product_ids=product_ids) if product_ids else []
+    metrics_map = {m["product_id"]: m for m in all_metrics}
+
     items = []
     for p in products:
-        metrics = await engine.compute_product_metrics(p.id)
+        metrics = metrics_map.get(p.id, {})
         risk = compute_risk_score(metrics)
         rec = determine_recommendation_type(metrics, risk)
-
-        # Get category name
-        cat_name = None
-        if p.category_id:
-            cat_r = await db.execute(select(Category.name).where(Category.id == p.category_id))
-            cat_name = cat_r.scalar()
 
         items.append(ProductListItem(
             id=p.id,
             name=p.name,
             sku=p.sku,
             barcode=p.barcode,
-            category_name=cat_name,
+            category_name=category_map.get(p.category_id),
             purchase_price=p.purchase_price,
             sale_price=p.sale_price,
             total_quantity=metrics.get("total_quantity", 0),

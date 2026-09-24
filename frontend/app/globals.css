@@ -760,6 +760,10 @@ tr:hover td {
 }
 
 @media (max-width: 768px) {
+  :root {
+    --glass-blur: blur(8px);
+  }
+
   /* Sidebar slides off screen by default; shows when .open */
   .sidebar {
     transform: translateX(-100%);
